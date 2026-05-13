@@ -295,6 +295,107 @@ func (s *Store) migrate() error {
 		s.db.Exec(`ALTER TABLE bots ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`)
 	}
 
+	// Moderation tables. Configs and levels are scoped to (bot_id, chat_id);
+	// providers are global so API keys are not duplicated per chat.
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS moderation_chat_configs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bot_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			alert_chat_id INTEGER NOT NULL DEFAULT 0,
+			skip_bot_messages INTEGER NOT NULL DEFAULT 1,
+			include_context INTEGER NOT NULL DEFAULT 1,
+			context_messages_limit INTEGER NOT NULL DEFAULT 30,
+			context_minutes INTEGER NOT NULL DEFAULT 30,
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT '',
+			UNIQUE(bot_id, chat_id)
+		);
+		CREATE TABLE IF NOT EXISTS moderation_providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			api_url TEXT NOT NULL,
+			api_key TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			timeout_seconds INTEGER NOT NULL DEFAULT 30,
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS moderation_chat_levels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bot_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			level INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			provider_id INTEGER NOT NULL DEFAULT 0,
+			required INTEGER NOT NULL DEFAULT 1,
+			only_if_uncertain INTEGER NOT NULL DEFAULT 0,
+			system_prompt TEXT NOT NULL DEFAULT '',
+			user_prompt_template TEXT NOT NULL DEFAULT '',
+			min_confidence REAL NOT NULL DEFAULT 0.70,
+			trigger_severity TEXT NOT NULL DEFAULT 'medium',
+			action TEXT NOT NULL DEFAULT 'alert',
+			duration_seconds INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT '',
+			UNIQUE(bot_id, chat_id, level)
+		);
+		CREATE TABLE IF NOT EXISTS moderation_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bot_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL,
+			user_id INTEGER NOT NULL DEFAULT 0,
+			username TEXT NOT NULL DEFAULT '',
+			message_text TEXT NOT NULL DEFAULT '',
+			message_date INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL,
+			final_toxic INTEGER NOT NULL DEFAULT 0,
+			final_severity TEXT NOT NULL DEFAULT '',
+			final_category TEXT NOT NULL DEFAULT '',
+			final_confidence REAL NOT NULL DEFAULT 0,
+			final_reason TEXT NOT NULL DEFAULT '',
+			final_action TEXT NOT NULL DEFAULT '',
+			action_duration_seconds INTEGER NOT NULL DEFAULT 0,
+			action_result TEXT NOT NULL DEFAULT '',
+			action_error TEXT NOT NULL DEFAULT '',
+			alert_sent INTEGER NOT NULL DEFAULT 0,
+			alert_chat_id INTEGER NOT NULL DEFAULT 0,
+			alert_message_id INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT '',
+			UNIQUE(bot_id, chat_id, message_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_moderation_events_chat ON moderation_events(bot_id, chat_id, created_at);
+		CREATE TABLE IF NOT EXISTS moderation_level_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id INTEGER NOT NULL,
+			level INTEGER NOT NULL,
+			provider_id INTEGER NOT NULL DEFAULT 0,
+			provider_kind TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			toxic INTEGER NOT NULL DEFAULT 0,
+			severity TEXT NOT NULL DEFAULT '',
+			category TEXT NOT NULL DEFAULT '',
+			confidence REAL NOT NULL DEFAULT 0,
+			needs_context INTEGER NOT NULL DEFAULT 0,
+			context_dependent INTEGER NOT NULL DEFAULT 0,
+			needs_human_review INTEGER NOT NULL DEFAULT 0,
+			reason TEXT NOT NULL DEFAULT '',
+			raw_response TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			latency_ms INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_moderation_results_event ON moderation_level_results(event_id, level);
+	`)
+	if err != nil {
+		return err
+	}
+
 	// Add bot_id column to messages if missing (migrate PK to include bot_id)
 	var hasMsgBotID int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='bot_id'`).Scan(&hasMsgBotID)
@@ -1416,6 +1517,267 @@ func (s *Store) GetBridgeMsgMappingReverse(bridgeID int64, telegramMsgID int) (s
 	err := s.db.QueryRow(`SELECT external_msg_id FROM bridge_msg_mappings WHERE bridge_id=? AND telegram_msg_id=?`,
 		bridgeID, telegramMsgID).Scan(&extMsgID)
 	return extMsgID, err
+}
+
+// Moderation methods
+
+func (s *Store) GetModerationChatConfig(botID, chatID int64) (*models.ModerationChatConfig, error) {
+	var c models.ModerationChatConfig
+	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes, created_at, updated_at
+		FROM moderation_chat_configs WHERE bot_id=? AND chat_id=?`, botID, chatID).
+		Scan(&c.ID, &c.BotID, &c.ChatID, &c.Enabled, &c.AlertChatID, &c.SkipBotMessages, &c.IncludeContext, &c.ContextMessagesLimit, &c.ContextMinutes, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) SaveModerationChatConfig(c models.ModerationChatConfig) error {
+	now := time.Now().Format(time.RFC3339)
+	if c.ContextMessagesLimit <= 0 {
+		c.ContextMessagesLimit = 30
+	}
+	if c.ContextMinutes <= 0 {
+		c.ContextMinutes = 30
+	}
+	_, err := s.db.Exec(`INSERT INTO moderation_chat_configs
+		(bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(bot_id, chat_id) DO UPDATE SET
+			enabled=excluded.enabled, alert_chat_id=excluded.alert_chat_id, skip_bot_messages=excluded.skip_bot_messages,
+			include_context=excluded.include_context, context_messages_limit=excluded.context_messages_limit,
+			context_minutes=excluded.context_minutes, updated_at=excluded.updated_at`,
+		c.BotID, c.ChatID, c.Enabled, c.AlertChatID, c.SkipBotMessages, c.IncludeContext, c.ContextMessagesLimit, c.ContextMinutes, now, now)
+	return err
+}
+
+func (s *Store) ListModerationProviders(mask bool) ([]models.ModerationProvider, error) {
+	rows, err := s.db.Query(`SELECT id, name, kind, api_url, api_key, model, enabled, timeout_seconds, created_at, updated_at
+		FROM moderation_providers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ModerationProvider
+	for rows.Next() {
+		var p models.ModerationProvider
+		if err := rows.Scan(&p.ID, &p.Name, &p.Kind, &p.APIURL, &p.APIKey, &p.Model, &p.Enabled, &p.TimeoutSeconds, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		p.APIKeyMasked = MaskSecret(p.APIKey)
+		if mask {
+			p.APIKey = ""
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (s *Store) GetModerationProvider(id int64) (*models.ModerationProvider, error) {
+	var p models.ModerationProvider
+	err := s.db.QueryRow(`SELECT id, name, kind, api_url, api_key, model, enabled, timeout_seconds, created_at, updated_at
+		FROM moderation_providers WHERE id=?`, id).
+		Scan(&p.ID, &p.Name, &p.Kind, &p.APIURL, &p.APIKey, &p.Model, &p.Enabled, &p.TimeoutSeconds, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	p.APIKeyMasked = MaskSecret(p.APIKey)
+	return &p, nil
+}
+
+func (s *Store) SaveModerationProvider(p models.ModerationProvider) error {
+	now := time.Now().Format(time.RFC3339)
+	if p.TimeoutSeconds <= 0 {
+		p.TimeoutSeconds = 30
+	}
+	if p.ID == 0 {
+		_, err := s.db.Exec(`INSERT INTO moderation_providers (name, kind, api_url, api_key, model, enabled, timeout_seconds, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.Name, p.Kind, p.APIURL, p.APIKey, p.Model, p.Enabled, p.TimeoutSeconds, now, now)
+		return err
+	}
+	if p.APIKey == "" {
+		_, err := s.db.Exec(`UPDATE moderation_providers SET name=?, kind=?, api_url=?, model=?, enabled=?, timeout_seconds=?, updated_at=? WHERE id=?`,
+			p.Name, p.Kind, p.APIURL, p.Model, p.Enabled, p.TimeoutSeconds, now, p.ID)
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE moderation_providers SET name=?, kind=?, api_url=?, api_key=?, model=?, enabled=?, timeout_seconds=?, updated_at=? WHERE id=?`,
+		p.Name, p.Kind, p.APIURL, p.APIKey, p.Model, p.Enabled, p.TimeoutSeconds, now, p.ID)
+	return err
+}
+
+func (s *Store) DeleteModerationProvider(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM moderation_providers WHERE id=?`, id)
+	return err
+}
+
+func MaskSecret(v string) string {
+	if v == "" {
+		return ""
+	}
+	if len(v) <= 8 {
+		return "****"
+	}
+	return v[:4] + "..." + v[len(v)-4:]
+}
+
+func (s *Store) GetModerationLevels(botID, chatID int64) ([]models.ModerationChatLevel, error) {
+	rows, err := s.db.Query(`SELECT id, bot_id, chat_id, level, name, enabled, provider_id, required, only_if_uncertain, system_prompt, user_prompt_template, min_confidence, trigger_severity, action, duration_seconds, created_at, updated_at
+		FROM moderation_chat_levels WHERE bot_id=? AND chat_id=? ORDER BY level`, botID, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ModerationChatLevel
+	for rows.Next() {
+		var l models.ModerationChatLevel
+		if err := rows.Scan(&l.ID, &l.BotID, &l.ChatID, &l.Level, &l.Name, &l.Enabled, &l.ProviderID, &l.Required, &l.OnlyIfUncertain, &l.SystemPrompt, &l.UserPromptTemplate, &l.MinConfidence, &l.TriggerSeverity, &l.Action, &l.DurationSeconds, &l.CreatedAt, &l.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+func (s *Store) SaveModerationLevel(l models.ModerationChatLevel) error {
+	now := time.Now().Format(time.RFC3339)
+	if l.MinConfidence <= 0 {
+		l.MinConfidence = 0.70
+	}
+	if l.TriggerSeverity == "" {
+		l.TriggerSeverity = "medium"
+	}
+	if l.Action == "" {
+		l.Action = "alert"
+	}
+	_, err := s.db.Exec(`INSERT INTO moderation_chat_levels
+		(bot_id, chat_id, level, name, enabled, provider_id, required, only_if_uncertain, system_prompt, user_prompt_template, min_confidence, trigger_severity, action, duration_seconds, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(bot_id, chat_id, level) DO UPDATE SET
+			name=excluded.name, enabled=excluded.enabled, provider_id=excluded.provider_id, required=excluded.required,
+			only_if_uncertain=excluded.only_if_uncertain, system_prompt=excluded.system_prompt,
+			user_prompt_template=excluded.user_prompt_template, min_confidence=excluded.min_confidence,
+			trigger_severity=excluded.trigger_severity, action=excluded.action, duration_seconds=excluded.duration_seconds,
+			updated_at=excluded.updated_at`,
+		l.BotID, l.ChatID, l.Level, l.Name, l.Enabled, l.ProviderID, l.Required, l.OnlyIfUncertain, l.SystemPrompt, l.UserPromptTemplate, l.MinConfidence, l.TriggerSeverity, l.Action, l.DurationSeconds, now, now)
+	return err
+}
+
+func (s *Store) CreateModerationEvent(e models.ModerationEvent) (int64, bool, error) {
+	now := time.Now().Format(time.RFC3339)
+	res, err := s.db.Exec(`INSERT OR IGNORE INTO moderation_events
+		(bot_id, chat_id, message_id, user_id, username, message_text, message_date, status, alert_chat_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.BotID, e.ChatID, e.MessageID, e.UserID, e.Username, e.MessageText, e.MessageDate, e.Status, e.AlertChatID, now)
+	if err != nil {
+		return 0, false, err
+	}
+	affected, _ := res.RowsAffected()
+	var id int64
+	err = s.db.QueryRow(`SELECT id FROM moderation_events WHERE bot_id=? AND chat_id=? AND message_id=?`, e.BotID, e.ChatID, e.MessageID).Scan(&id)
+	return id, affected > 0, err
+}
+
+func (s *Store) UpdateModerationEvent(e models.ModerationEvent) error {
+	_, err := s.db.Exec(`UPDATE moderation_events SET status=?, final_toxic=?, final_severity=?, final_category=?, final_confidence=?, final_reason=?, final_action=?, action_duration_seconds=?, action_result=?, action_error=?, alert_sent=?, alert_chat_id=?, alert_message_id=? WHERE id=?`,
+		e.Status, e.FinalToxic, e.FinalSeverity, e.FinalCategory, e.FinalConfidence, e.FinalReason, e.FinalAction, e.ActionDurationSeconds, e.ActionResult, e.ActionError, e.AlertSent, e.AlertChatID, e.AlertMessageID, e.ID)
+	return err
+}
+
+func (s *Store) SaveModerationLevelResult(r models.ModerationLevelResult) error {
+	_, err := s.db.Exec(`INSERT INTO moderation_level_results
+		(event_id, level, provider_id, provider_kind, model, toxic, severity, category, confidence, needs_context, context_dependent, needs_human_review, reason, raw_response, error, latency_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.EventID, r.Level, r.ProviderID, r.ProviderKind, r.Model, r.Toxic, r.Severity, r.Category, r.Confidence, r.NeedsContext, r.ContextDependent, r.NeedsHumanReview, r.Reason, r.RawResponse, r.Error, r.LatencyMS, time.Now().Format(time.RFC3339))
+	return err
+}
+
+func (s *Store) ListModerationEvents(botID, chatID int64, userID int64, severity, action, status, dateFrom, dateTo string, limit, offset int) ([]models.ModerationEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	q := `SELECT id, bot_id, chat_id, message_id, user_id, username, message_text, message_date, status, final_toxic, final_severity, final_category, final_confidence, final_reason, final_action, action_duration_seconds, action_result, action_error, alert_sent, alert_chat_id, alert_message_id, created_at FROM moderation_events WHERE bot_id=? AND chat_id=?`
+	args := []any{botID, chatID}
+	if userID != 0 {
+		q += ` AND user_id=?`
+		args = append(args, userID)
+	}
+	if severity != "" {
+		q += ` AND final_severity=?`
+		args = append(args, severity)
+	}
+	if action != "" {
+		q += ` AND final_action=?`
+		args = append(args, action)
+	}
+	if status != "" {
+		q += ` AND status=?`
+		args = append(args, status)
+	}
+	if dateFrom != "" {
+		q += ` AND created_at>=?`
+		args = append(args, dateFrom)
+	}
+	if dateTo != "" {
+		q += ` AND created_at<=?`
+		args = append(args, dateTo)
+	}
+	q += ` ORDER BY id DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ModerationEvent
+	for rows.Next() {
+		e, err := scanModerationEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func (s *Store) GetModerationEvent(id int64) (*models.ModerationEvent, error) {
+	row := s.db.QueryRow(`SELECT id, bot_id, chat_id, message_id, user_id, username, message_text, message_date, status, final_toxic, final_severity, final_category, final_confidence, final_reason, final_action, action_duration_seconds, action_result, action_error, alert_sent, alert_chat_id, alert_message_id, created_at FROM moderation_events WHERE id=?`, id)
+	e, err := scanModerationEvent(row)
+	if err != nil {
+		return nil, err
+	}
+	results, err := s.GetModerationLevelResults(id)
+	if err != nil {
+		return nil, err
+	}
+	e.LevelResults = results
+	return &e, nil
+}
+
+type moderationEventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanModerationEvent(row moderationEventScanner) (models.ModerationEvent, error) {
+	var e models.ModerationEvent
+	err := row.Scan(&e.ID, &e.BotID, &e.ChatID, &e.MessageID, &e.UserID, &e.Username, &e.MessageText, &e.MessageDate, &e.Status, &e.FinalToxic, &e.FinalSeverity, &e.FinalCategory, &e.FinalConfidence, &e.FinalReason, &e.FinalAction, &e.ActionDurationSeconds, &e.ActionResult, &e.ActionError, &e.AlertSent, &e.AlertChatID, &e.AlertMessageID, &e.CreatedAt)
+	return e, err
+}
+
+func (s *Store) GetModerationLevelResults(eventID int64) ([]models.ModerationLevelResult, error) {
+	rows, err := s.db.Query(`SELECT id, event_id, level, provider_id, provider_kind, model, toxic, severity, category, confidence, needs_context, context_dependent, needs_human_review, reason, raw_response, error, latency_ms, created_at FROM moderation_level_results WHERE event_id=? ORDER BY level`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ModerationLevelResult
+	for rows.Next() {
+		var r models.ModerationLevelResult
+		if err := rows.Scan(&r.ID, &r.EventID, &r.Level, &r.ProviderID, &r.ProviderKind, &r.Model, &r.Toxic, &r.Severity, &r.Category, &r.Confidence, &r.NeedsContext, &r.ContextDependent, &r.NeedsHumanReview, &r.Reason, &r.RawResponse, &r.Error, &r.LatencyMS, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // DB returns the underlying database connection for advanced queries.

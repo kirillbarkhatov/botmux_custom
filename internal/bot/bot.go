@@ -1,8 +1,10 @@
 package bot
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -557,6 +559,72 @@ func (b *Bot) BanUser(chatID int64, userID int64) error {
 	}
 	_, err := b.api.Request(ban)
 	return err
+}
+
+func (b *Bot) BanUserUntil(chatID int64, userID int64, untilUnix int64) error {
+	body := map[string]any{"chat_id": chatID, "user_id": userID}
+	if untilUnix > 0 {
+		body["until_date"] = untilUnix
+	}
+	return b.rawTelegramRequest("banChatMember", body)
+}
+
+func (b *Bot) MuteUser(chatID int64, userID int64, untilUnix int64) error {
+	body := map[string]any{
+		"chat_id": chatID,
+		"user_id": userID,
+		"permissions": map[string]bool{
+			"can_send_messages":         false,
+			"can_send_audios":           false,
+			"can_send_documents":        false,
+			"can_send_photos":           false,
+			"can_send_videos":           false,
+			"can_send_video_notes":      false,
+			"can_send_voice_notes":      false,
+			"can_send_polls":            false,
+			"can_send_other_messages":   false,
+			"can_add_web_page_previews": false,
+		},
+	}
+	if untilUnix > 0 {
+		body["until_date"] = untilUnix
+	}
+	return b.rawTelegramRequest("restrictChatMember", body)
+}
+
+func (b *Bot) rawTelegramRequest(method string, payload map[string]any) error {
+	base := b.baseURL
+	if base == "" {
+		base = "https://api.telegram.org"
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/bot%s/%s", base, b.api.Token, method)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var parsed struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !parsed.OK {
+		if parsed.Description == "" {
+			parsed.Description = string(body)
+		}
+		return fmt.Errorf("%s failed: %s", method, parsed.Description)
+	}
+	return nil
 }
 
 func (b *Bot) UnbanUser(chatID int64, userID int64) error {

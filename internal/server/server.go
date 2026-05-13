@@ -27,6 +27,7 @@ import (
 	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/bridge"
 	"github.com/skrashevich/botmux/internal/models"
+	"github.com/skrashevich/botmux/internal/moderation"
 	"github.com/skrashevich/botmux/internal/proxy"
 	"github.com/skrashevich/botmux/internal/store"
 	"github.com/skrashevich/botmux/internal/version"
@@ -300,6 +301,20 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/llm-config", s.authMiddleware(s.handleGetLLMConfig))
 	mux.HandleFunc("/api/llm-config/save", s.adminOnly(s.handleSaveLLMConfig))
 	mux.HandleFunc("/api/bots/description", s.authMiddleware(s.handleBotDescription))
+
+	// Chat moderation — admin only for the first implementation.
+	mux.HandleFunc("/api/moderation/config", s.adminOnly(s.handleModerationConfig))
+	mux.HandleFunc("/api/moderation/providers", s.adminOnly(s.handleModerationProviders))
+	mux.HandleFunc("/api/moderation/providers/add", s.adminOnly(s.handleModerationProviderSave))
+	mux.HandleFunc("/api/moderation/providers/update", s.adminOnly(s.handleModerationProviderSave))
+	mux.HandleFunc("/api/moderation/providers/delete", s.adminOnly(s.handleModerationProviderDelete))
+	mux.HandleFunc("/api/moderation/providers/test", s.adminOnly(s.handleModerationProviderTest))
+	mux.HandleFunc("/api/moderation/levels", s.adminOnly(s.handleModerationLevels))
+	mux.HandleFunc("/api/moderation/levels/update", s.adminOnly(s.handleModerationLevelUpdate))
+	mux.HandleFunc("/api/moderation/events", s.adminOnly(s.handleModerationEvents))
+	mux.HandleFunc("/api/moderation/events/detail", s.adminOnly(s.handleModerationEventDetail))
+	mux.HandleFunc("/api/moderation/alert-chats", s.adminOnly(s.handleModerationAlertChats))
+	mux.HandleFunc("/api/moderation/test-classify", s.adminOnly(s.handleModerationTestClassify))
 
 	// Long polling for updates — auth required
 	mux.HandleFunc("/api/updates/poll", s.authMiddleware(s.handleUpdatesPoll))
@@ -2003,6 +2018,180 @@ func (s *Server) handleSaveLLMConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		botID, _ := strconv.ParseInt(r.URL.Query().Get("bot_id"), 10, 64)
+		chatID, _ := strconv.ParseInt(r.URL.Query().Get("chat_id"), 10, 64)
+		cfg, err := s.store.GetModerationChatConfig(botID, chatID)
+		if err != nil {
+			cfg = &models.ModerationChatConfig{BotID: botID, ChatID: chatID, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30}
+		}
+		_ = moderation.NewService(s.store).EnsureDefaults(botID, chatID)
+		writeJSON(w, cfg)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	var cfg models.ModerationChatConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.SaveModerationChatConfig(cfg); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = moderation.NewService(s.store).EnsureDefaults(cfg.BotID, cfg.ChatID)
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.store.ListModerationProviders(true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if providers == nil {
+		providers = []models.ModerationProvider{}
+	}
+	writeJSON(w, providers)
+}
+
+func (s *Server) handleModerationProviderSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	var p models.ModerationProvider
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeError(w, err)
+		return
+	}
+	if p.Kind == "openai-compatible" {
+		p.Kind = "openai_compatible"
+	}
+	if err := s.store.SaveModerationProvider(p); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationProviderDelete(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err := s.store.DeleteModerationProvider(id); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationProviderTest(w http.ResponseWriter, r *http.Request) {
+	var p models.ModerationProvider
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeError(w, err)
+		return
+	}
+	if p.ID != 0 && p.APIKey == "" {
+		existing, err := s.store.GetModerationProvider(p.ID)
+		if err == nil {
+			p.APIKey = existing.APIKey
+		}
+	}
+	_, err := (&moderation.Client{}).Classify(r.Context(), p, moderation.Level1SystemPrompt, "Target message:\nhello\n\nSender:\ntest (1)")
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleModerationLevels(w http.ResponseWriter, r *http.Request) {
+	botID, _ := strconv.ParseInt(r.URL.Query().Get("bot_id"), 10, 64)
+	chatID, _ := strconv.ParseInt(r.URL.Query().Get("chat_id"), 10, 64)
+	_ = moderation.NewService(s.store).EnsureDefaults(botID, chatID)
+	levels, err := s.store.GetModerationLevels(botID, chatID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, levels)
+}
+
+func (s *Server) handleModerationLevelUpdate(w http.ResponseWriter, r *http.Request) {
+	var level models.ModerationChatLevel
+	if err := json.NewDecoder(r.Body).Decode(&level); err != nil {
+		writeError(w, err)
+		return
+	}
+	if level.Level == 1 || level.Level == 2 {
+		level.Required = true
+		level.OnlyIfUncertain = false
+	}
+	if err := s.store.SaveModerationLevel(level); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	botID, _ := strconv.ParseInt(q.Get("bot_id"), 10, 64)
+	chatID, _ := strconv.ParseInt(q.Get("chat_id"), 10, 64)
+	userID, _ := strconv.ParseInt(q.Get("user_id"), 10, 64)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	events, err := s.store.ListModerationEvents(botID, chatID, userID, q.Get("severity"), q.Get("action"), q.Get("status"), q.Get("date_from"), q.Get("date_to"), limit, offset)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if events == nil {
+		events = []models.ModerationEvent{}
+	}
+	writeJSON(w, events)
+}
+
+func (s *Server) handleModerationEventDetail(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	event, err := s.store.GetModerationEvent(id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, event)
+}
+
+func (s *Server) handleModerationAlertChats(w http.ResponseWriter, r *http.Request) {
+	botID, _ := strconv.ParseInt(r.URL.Query().Get("bot_id"), 10, 64)
+	chats, err := s.store.GetChats(botID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if chats == nil {
+		chats = []models.Chat{}
+	}
+	writeJSON(w, chats)
+}
+
+func (s *Server) handleModerationTestClassify(w http.ResponseWriter, r *http.Request) {
+	var req models.ModerationTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err)
+		return
+	}
+	resp, err := moderation.NewService(s.store).TestClassify(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, resp)
 }
 
 // handleBotDescription gets or sets the LLM description for a bot.

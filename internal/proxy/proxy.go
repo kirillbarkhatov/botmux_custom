@@ -20,6 +20,7 @@ import (
 	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/llm"
 	"github.com/skrashevich/botmux/internal/models"
+	"github.com/skrashevich/botmux/internal/moderation"
 	"github.com/skrashevich/botmux/internal/store"
 )
 
@@ -178,7 +179,8 @@ type Manager struct {
 	webhookBots       map[int64]bool         // bots receiving updates via webhook (skip polling)
 	updateQueues      map[int64]*UpdateQueue // botID -> long-poll update queue (lazy init)
 	client            *http.Client
-	llmRouter         *llm.Router   // LLM-based routing
+	llmRouter         *llm.Router // LLM-based routing
+	moderator         *moderation.Service
 	tgAPIBaseURL      string        // base URL for Telegram API
 	retryDelayInitial time.Duration // initial backoff delay for pollLoop (default 1s)
 	retryDelayMax     time.Duration // maximum backoff delay for pollLoop (default 30s)
@@ -198,6 +200,7 @@ func NewManager(s *store.Store, tgAPIBaseURL string) *Manager {
 		updateQueues:      make(map[int64]*UpdateQueue),
 		client:            &http.Client{Timeout: 120 * time.Second},
 		llmRouter:         llm.NewRouter(s),
+		moderator:         moderation.NewService(s),
 		tgAPIBaseURL:      tgAPIBaseURL,
 		retryDelayInitial: 1 * time.Second,
 		retryDelayMax:     30 * time.Second,
@@ -322,6 +325,8 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) {
 	if b.ManageEnabled {
 		pm.processForManagement(botID, rawUpdate)
 	}
+
+	pm.applyModeration(botID, rawUpdate)
 
 	// Proxy: forward to backend (skip if long poll enabled — backend pulls via queue)
 	if b.ProxyEnabled && b.BackendURL != "" && !b.LongPollEnabled {
@@ -632,44 +637,83 @@ func (pm *Manager) pollLoop(ctx context.Context, botID int64) {
 			default:
 			}
 
-			updateID, ok := update["update_id"].(float64)
-			if !ok {
+			if _, ok := update["update_id"].(float64); !ok {
 				log.Printf("[proxy] pollLoop: botID=%d update has no valid update_id, skipping", botID)
 				continue
 			}
 
-			updateSummary := summarizeUpdate(update)
-			log.Printf("[proxy] pollLoop: botID=%d processing %s", botID, updateSummary)
-
-			// Long poll queue: enqueue for pull-based consumers
-			if b.LongPollEnabled {
-				pm.EnqueueUpdate(botID, update)
-			}
-
-			// Proxy: forward to backend (skip if long poll enabled — backend pulls via queue)
-			if b.ProxyEnabled && b.BackendURL != "" && !b.LongPollEnabled {
-				log.Printf("[proxy] forward: botID=%d %s → %s", botID, updateSummary, b.BackendURL)
-				err := pm.forwardUpdate(ctx, b, update)
-				if err != nil {
-					pm.store.UpdateBotStatus(botID, fmt.Sprintf("forward error: %v", err), "")
-					log.Printf("[proxy] forward: botID=%d FAILED for %s: %v", botID, updateSummary, err)
-				} else {
-					log.Printf("[proxy] forward: botID=%d SUCCESS for %s", botID, updateSummary)
-					pm.store.IncrementBotForwarded(botID)
-				}
-			} else if b.ProxyEnabled {
-				log.Printf("[proxy] pollLoop: botID=%d proxy enabled but no backend_url set!", botID)
-			}
-
-			// Management: process update for chat/message tracking
-			if b.ManageEnabled {
-				pm.processForManagement(botID, update)
-			}
-
-			newOffset := int64(updateID) + 1
-			pm.store.UpdateBotOffset(botID, newOffset)
-			pm.store.UpdateBotStatus(botID, "", time.Now().Format(time.RFC3339))
+			log.Printf("[proxy] pollLoop: botID=%d processing %s", botID, summarizeUpdate(update))
+			pm.ProcessUpdate(botID, update)
 		}
+	}
+}
+
+func (pm *Manager) applyModeration(botID int64, rawUpdate map[string]any) {
+	if pm.moderator == nil {
+		return
+	}
+	msg, ok := extractModerationMessage(botID, rawUpdate)
+	if !ok {
+		return
+	}
+	pm.mu.Lock()
+	b := pm.managedBots[botID]
+	pm.mu.Unlock()
+	pm.moderator.Process(context.Background(), msg, b)
+}
+
+func extractModerationMessage(botID int64, rawUpdate map[string]any) (moderation.Message, bool) {
+	rawMsg, _ := rawUpdate["message"].(map[string]any)
+	if rawMsg == nil {
+		rawMsg, _ = rawUpdate["channel_post"].(map[string]any)
+	}
+	if rawMsg == nil {
+		return moderation.Message{}, false
+	}
+	text, _ := rawMsg["text"].(string)
+	if text == "" {
+		text, _ = rawMsg["caption"].(string)
+	}
+	if strings.TrimSpace(text) == "" {
+		return moderation.Message{}, false
+	}
+	chat, _ := rawMsg["chat"].(map[string]any)
+	from, _ := rawMsg["from"].(map[string]any)
+	messageID := int(number(rawMsg["message_id"]))
+	chatID := int64(number(chat["id"]))
+	userID := int64(number(from["id"]))
+	username := ""
+	if u, _ := from["username"].(string); u != "" {
+		username = "@" + u
+	} else {
+		first, _ := from["first_name"].(string)
+		last, _ := from["last_name"].(string)
+		username = strings.TrimSpace(first + " " + last)
+	}
+	chatTitle, _ := chat["title"].(string)
+	if chatTitle == "" {
+		chatTitle, _ = chat["username"].(string)
+	}
+	fromIsBot, _ := from["is_bot"].(bool)
+	return moderation.Message{
+		BotID: botID, ChatID: chatID, MessageID: messageID, UserID: userID, Username: username,
+		Text: text, Date: int64(number(rawMsg["date"])) * 1000, FromIsBot: fromIsBot, ChatTitle: chatTitle,
+	}, chatID != 0 && messageID != 0
+}
+
+func number(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	default:
+		return 0
 	}
 }
 

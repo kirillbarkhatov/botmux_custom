@@ -1513,6 +1513,7 @@ body::before { display: none; }
       <div class="tab" data-tab="tags" onclick="switchTab('tags')">Tags</div>
       <div class="tab" data-tab="info" onclick="switchTab('info')">Info</div>
       <div class="tab" data-tab="send" onclick="switchTab('send')">Broadcast</div>
+      <div class="tab" data-tab="moderation" onclick="switchTab('moderation')">Moderation</div>
     </div>
 
     <div id="tab-messages" class="tab-content" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
@@ -1602,6 +1603,65 @@ body::before { display: none; }
         <div style="margin-top:12px; text-align:right;">
           <button class="btn btn-primary" onclick="sendMessage()">TRANSMIT</button>
         </div>
+      </div>
+    </div>
+
+    <div id="tab-moderation" class="tab-content content" style="display:none;">
+      <div class="panel">
+        <div class="panel-title" data-i18n="moderation_general">Moderation settings</div>
+        <label class="route-toggle"><input type="checkbox" id="modEnabled"><span class="route-toggle-label" data-i18n="moderation_enable">Enable moderation for this chat</span></label>
+        <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
+          <div><label data-i18n="moderation_alert_chat">Alert chat</label><select id="modAlertChat" onchange="updateModAlertHint()"></select></div>
+          <div><label data-i18n="moderation_alert_manual">Manual alert chat_id</label><input id="modAlertManual" type="number" placeholder="-100..." oninput="updateModAlertHint()"></div>
+          <div><label data-i18n="moderation_context_limit">Context messages</label><input id="modContextLimit" type="number" min="1" max="100"></div>
+          <div><label data-i18n="moderation_context_minutes">Context minutes</label><input id="modContextMinutes" type="number" min="1"></div>
+        </div>
+        <div class="hint" style="margin-top:10px" id="modAlertHint">The same bot will send alerts to the selected chat. Add this bot to the alert chat first.</div>
+        <label class="modal-perm" style="margin-top:10px"><input type="checkbox" id="modSkipBots"> <span data-i18n="moderation_skip_bots">Skip bot messages</span></label>
+        <label class="modal-perm"><input type="checkbox" id="modIncludeContext"> <span data-i18n="moderation_include_context">Include recent context</span></label>
+        <button class="btn btn-primary btn-sm" onclick="saveModerationConfig()" data-i18n="save">SAVE</button>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="route-header"><div class="panel-title" data-i18n="moderation_providers">Providers</div><button class="btn btn-primary btn-sm" onclick="showModProviderForm()" data-i18n="add">ADD</button></div>
+        <div class="hint" data-i18n="moderation_openai_warning">Uncertain messages and context may be sent to an external OpenAI-compatible provider.</div>
+        <div id="modProviders"></div>
+        <div id="modProviderForm" style="display:none;margin-top:12px" class="modal-field">
+          <input type="hidden" id="modProviderID">
+          <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+            <div><label>Name</label><input id="modProviderName"></div>
+            <div><label>Kind</label><select id="modProviderKind"><option value="local">local</option><option value="openai_compatible">openai-compatible</option><option value="openai">openai</option></select></div>
+            <div><label>API URL</label><input id="modProviderURL" placeholder="http://localhost:11434/v1"></div>
+            <div><label>API key</label><input id="modProviderKey" type="password" placeholder="leave empty to keep"></div>
+            <div><label>Model</label><input id="modProviderModel" placeholder="llama3:latest"></div>
+            <div><label>Timeout</label><input id="modProviderTimeout" type="number" value="30"></div>
+          </div>
+          <label class="modal-perm"><input type="checkbox" id="modProviderEnabled" checked> Enabled</label>
+          <button class="btn btn-sm" onclick="testModProvider()">TEST</button>
+          <button class="btn btn-primary btn-sm" onclick="saveModProvider()">SAVE</button>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-title" data-i18n="moderation_levels">Levels for this chat</div>
+        <div id="modLevels"></div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-title" data-i18n="moderation_test">Test classification</div>
+        <textarea id="modTestText" style="width:100%;min-height:90px;resize:vertical"></textarea>
+        <button class="btn btn-sm" onclick="runModTest()" data-i18n="moderation_run_test">RUN TEST</button>
+        <pre id="modTestResult" style="white-space:pre-wrap;color:var(--text2)"></pre>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-title" data-i18n="moderation_log">Moderation log</div>
+        <div class="tag-form">
+          <input id="modFilterUser" type="number" placeholder="user id">
+          <select id="modFilterSeverity"><option value="">severity</option><option>low</option><option>medium</option><option>high</option></select>
+          <select id="modFilterAction"><option value="">action</option><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
+          <select id="modFilterStatus"><option value="">status</option><option>ok</option><option>flagged</option><option>action_taken</option><option>error</option><option>skipped</option></select>
+          <input id="modFilterDateFrom" type="date">
+          <input id="modFilterDateTo" type="date">
+          <button class="btn btn-sm" onclick="loadModerationEvents()">FILTER</button>
+        </div>
+        <div id="modEvents"></div>
       </div>
     </div>
   </div>
@@ -2337,6 +2397,7 @@ function toggleLang() {
 }
 
 function applyLang() {
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   // lang toggle button
   document.querySelector('.lang-toggle').textContent = currentLang.toUpperCase();
   // login screen
@@ -2385,7 +2446,7 @@ function applyLang() {
   }
   // tabs
   document.querySelectorAll('.tab').forEach(tab => {
-    const tabKeys = {messages:'tab_messages',stats:'tab_analytics',admins:'tab_admins',adminlog:'tab_audit',users:'tab_users',tags:'tab_tags',info:'tab_info',send:'tab_broadcast'};
+    const tabKeys = {messages:'tab_messages',stats:'tab_analytics',admins:'tab_admins',adminlog:'tab_audit',users:'tab_users',tags:'tab_tags',info:'tab_info',send:'tab_broadcast',moderation:'tab_moderation'};
     const key = tabKeys[tab.dataset.tab];
     if (key) tab.textContent = t(key);
   });
@@ -3347,6 +3408,7 @@ function switchTab(tab) {
   if (tab === 'adminlog') { adminLogOffset = 0; loadAdminLog(); }
   if (tab === 'users') { usersOffset = 0; loadUsers(); }
   if (tab === 'tags') loadTags();
+  if (tab === 'moderation') loadModeration();
 }
 
 // ===== MESSAGES =====
@@ -3627,6 +3689,200 @@ async function removeChat() {
     showBotDetail();
     loadChats(); toast(t('removed'));
   } catch(e) { toast(e.message, 'error'); }
+}
+
+// ===== MODERATION =====
+
+let modProvidersCache = [];
+let modAlertChatsLen = 0;
+
+async function loadModeration() {
+  if (!currentBotID || !currentChat) return;
+  await Promise.all([loadModerationConfig(), loadModProviders()]);
+  await loadModerationLevels();
+  await loadModerationEvents();
+}
+
+async function loadModerationConfig() {
+  const cfg = await api(`/api/moderation/config?bot_id=${currentBotID}&chat_id=${currentChat.id}`);
+  document.getElementById('modEnabled').checked = !!cfg.enabled;
+  document.getElementById('modSkipBots').checked = cfg.skip_bot_messages !== false;
+  document.getElementById('modIncludeContext').checked = cfg.include_context !== false;
+  document.getElementById('modContextLimit').value = cfg.context_messages_limit || 30;
+  document.getElementById('modContextMinutes').value = cfg.context_minutes || 30;
+  const chats = await api(`/api/moderation/alert-chats?bot_id=${currentBotID}`);
+  modAlertChatsLen = chats.length;
+  const sel = document.getElementById('modAlertChat');
+  sel.innerHTML = `<option value="0">${t('none')}</option>` + chats.map(c => `<option value="${c.id}">${esc(c.title || c.username || String(c.id))} / ${esc(c.type)} / ${c.id}</option>`).join('');
+  sel.value = String(cfg.alert_chat_id || 0);
+  document.getElementById('modAlertManual').value = cfg.alert_chat_id && !chats.some(c => c.id === cfg.alert_chat_id) ? cfg.alert_chat_id : '';
+  updateModAlertHint();
+}
+
+function updateModAlertHint() {
+  const selected = parseInt(document.getElementById('modAlertManual').value || document.getElementById('modAlertChat').value || '0');
+  let text = modAlertChatsLen === 0 ? t('moderation_alert_empty') : t('moderation_alert_hint');
+  if (selected && currentChat && selected === currentChat.id) text += ' ' + t('moderation_alert_same_chat');
+  document.getElementById('modAlertHint').textContent = text;
+}
+
+async function saveModerationConfig() {
+  const manual = parseInt(document.getElementById('modAlertManual').value || '0');
+  const selected = parseInt(document.getElementById('modAlertChat').value || '0');
+  const body = {
+    bot_id: currentBotID, chat_id: currentChat.id,
+    enabled: document.getElementById('modEnabled').checked,
+    alert_chat_id: manual || selected,
+    skip_bot_messages: document.getElementById('modSkipBots').checked,
+    include_context: document.getElementById('modIncludeContext').checked,
+    context_messages_limit: parseInt(document.getElementById('modContextLimit').value || '30'),
+    context_minutes: parseInt(document.getElementById('modContextMinutes').value || '30')
+  };
+  await api('/api/moderation/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  toast(t('saved'));
+}
+
+async function loadModProviders() {
+  modProvidersCache = await api('/api/moderation/providers');
+  document.getElementById('modProviders').innerHTML = modProvidersCache.map(p => `
+    <div class="route-item">
+      <div><b>${esc(p.name)}</b> <span class="badge">${esc(p.kind)}</span> ${p.enabled ? '' : '<span class="badge">OFF</span>'}<br>
+      <span style="color:var(--text3)">${esc(p.api_url)} / ${esc(p.model)} / ${esc(p.api_key_masked || '')}</span></div>
+      <div><button class="btn btn-sm" onclick="editModProvider(${p.id})">${t('edit')}</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteModProvider(${p.id})">${t('del')}</button></div>
+    </div>`).join('') || `<div class="hint">${t('no_data')}</div>`;
+}
+
+function showModProviderForm() {
+  document.getElementById('modProviderForm').style.display = 'block';
+  document.getElementById('modProviderID').value = '';
+  document.getElementById('modProviderName').value = '';
+  document.getElementById('modProviderKind').value = 'local';
+  document.getElementById('modProviderURL').value = 'http://localhost:11434/v1';
+  document.getElementById('modProviderKey').value = '';
+  document.getElementById('modProviderModel').value = 'llama3:latest';
+  document.getElementById('modProviderTimeout').value = 30;
+  document.getElementById('modProviderEnabled').checked = true;
+}
+
+function editModProvider(id) {
+  const p = modProvidersCache.find(x => x.id === id);
+  if (!p) return;
+  showModProviderForm();
+  document.getElementById('modProviderID').value = p.id;
+  document.getElementById('modProviderName').value = p.name || '';
+  document.getElementById('modProviderKind').value = p.kind || 'local';
+  document.getElementById('modProviderURL').value = p.api_url || '';
+  document.getElementById('modProviderModel').value = p.model || '';
+  document.getElementById('modProviderTimeout').value = p.timeout_seconds || 30;
+  document.getElementById('modProviderEnabled').checked = !!p.enabled;
+}
+
+function modProviderBody() {
+  return {
+    id: parseInt(document.getElementById('modProviderID').value || '0'),
+    name: document.getElementById('modProviderName').value,
+    kind: document.getElementById('modProviderKind').value,
+    api_url: document.getElementById('modProviderURL').value,
+    api_key: document.getElementById('modProviderKey').value,
+    model: document.getElementById('modProviderModel').value,
+    timeout_seconds: parseInt(document.getElementById('modProviderTimeout').value || '30'),
+    enabled: document.getElementById('modProviderEnabled').checked
+  };
+}
+
+async function saveModProvider() {
+  const body = modProviderBody();
+  await api(body.id ? '/api/moderation/providers/update' : '/api/moderation/providers/add', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  document.getElementById('modProviderForm').style.display = 'none';
+  await loadModProviders(); await loadModerationLevels();
+}
+
+async function testModProvider() {
+  const res = await api('/api/moderation/providers/test', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(modProviderBody())});
+  toast(res.ok ? 'OK' : res.error, res.ok ? 'success' : 'error');
+}
+
+async function deleteModProvider(id) {
+  if (!confirm(t('confirm_delete'))) return;
+  await api(`/api/moderation/providers/delete?id=${id}`, {method:'POST'});
+  await loadModProviders(); await loadModerationLevels();
+}
+
+async function loadModerationLevels() {
+  const levels = await api(`/api/moderation/levels?bot_id=${currentBotID}&chat_id=${currentChat.id}`);
+  const providerOpts = `<option value="0">${t('select_provider')}</option>` + modProvidersCache.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.kind)} / ${esc(p.model)})</option>`).join('');
+  document.getElementById('modLevels').innerHTML = levels.map(l => `
+    <div class="route-item" style="display:block">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+        <label><input type="checkbox" id="modLevelEnabled${l.level}" ${l.enabled ? 'checked' : ''}> L${l.level} ${esc(l.name)}</label>
+        <select id="modLevelProvider${l.level}">${providerOpts}</select>
+        <label><input type="checkbox" id="modLevelRequired${l.level}" ${l.required ? 'checked' : ''} ${l.level < 3 ? 'disabled' : ''}> required</label>
+        <label><input type="checkbox" id="modLevelUncertain${l.level}" ${l.only_if_uncertain ? 'checked' : ''} ${l.level < 3 ? 'disabled' : ''}> uncertain only</label>
+        <input id="modLevelConfidence${l.level}" type="number" step="0.01" min="0" max="1" value="${l.min_confidence || 0.7}">
+        <select id="modLevelSeverity${l.level}"><option>low</option><option>medium</option><option>high</option></select>
+        <select id="modLevelAction${l.level}"><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
+        <input id="modLevelDuration${l.level}" type="number" min="0" placeholder="seconds" value="${l.duration_seconds || 0}">
+      </div>
+      <textarea id="modLevelSystem${l.level}" style="width:100%;min-height:70px;margin-top:8px">${esc(l.system_prompt || '')}</textarea>
+      <textarea id="modLevelUser${l.level}" style="width:100%;min-height:70px;margin-top:8px">${esc(l.user_prompt_template || '')}</textarea>
+      <button class="btn btn-primary btn-sm" onclick="saveModLevel(${l.level})">${t('save')}</button>
+    </div>`).join('');
+  levels.forEach(l => {
+    document.getElementById(`modLevelProvider${l.level}`).value = String(l.provider_id || 0);
+    document.getElementById(`modLevelSeverity${l.level}`).value = l.trigger_severity || 'medium';
+    document.getElementById(`modLevelAction${l.level}`).value = l.action || 'alert';
+  });
+}
+
+async function saveModLevel(level) {
+  const body = {
+    bot_id: currentBotID, chat_id: currentChat.id, level,
+    name: `Level ${level}`,
+    enabled: document.getElementById(`modLevelEnabled${level}`).checked,
+    provider_id: parseInt(document.getElementById(`modLevelProvider${level}`).value || '0'),
+    required: level < 3 ? true : document.getElementById(`modLevelRequired${level}`).checked,
+    only_if_uncertain: level === 3 && document.getElementById(`modLevelUncertain${level}`).checked,
+    min_confidence: parseFloat(document.getElementById(`modLevelConfidence${level}`).value || '0.7'),
+    trigger_severity: document.getElementById(`modLevelSeverity${level}`).value,
+    action: document.getElementById(`modLevelAction${level}`).value,
+    duration_seconds: parseInt(document.getElementById(`modLevelDuration${level}`).value || '0'),
+    system_prompt: document.getElementById(`modLevelSystem${level}`).value,
+    user_prompt_template: document.getElementById(`modLevelUser${level}`).value
+  };
+  await api('/api/moderation/levels/update', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  toast(t('saved'));
+}
+
+async function runModTest() {
+  const body = {bot_id: currentBotID, chat_id: currentChat.id, message_text: document.getElementById('modTestText').value, username: 'test', user_id: 1};
+  const res = await api('/api/moderation/test-classify', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  document.getElementById('modTestResult').textContent = JSON.stringify(res, null, 2);
+}
+
+async function loadModerationEvents() {
+  const user = document.getElementById('modFilterUser')?.value || '';
+  const sev = document.getElementById('modFilterSeverity')?.value || '';
+  const act = document.getElementById('modFilterAction')?.value || '';
+  const st = document.getElementById('modFilterStatus')?.value || '';
+  const df = document.getElementById('modFilterDateFrom')?.value || '';
+  const dt = document.getElementById('modFilterDateTo')?.value || '';
+  const events = await api(`/api/moderation/events?bot_id=${currentBotID}&chat_id=${currentChat.id}&user_id=${encodeURIComponent(user)}&severity=${encodeURIComponent(sev)}&action=${encodeURIComponent(act)}&status=${encodeURIComponent(st)}&date_from=${encodeURIComponent(df)}&date_to=${encodeURIComponent(dt ? dt + 'T23:59:59' : '')}&limit=50`);
+  document.getElementById('modEvents').innerHTML = events.map(e => `
+    <div class="msg-row">
+      <span class="msg-time">${esc(e.created_at)}</span>
+      <span class="msg-user">${esc(e.username)} (${e.user_id})</span>
+      <span class="badge">${esc(e.final_severity || 'none')}</span>
+      <span class="badge">${esc(e.final_action || 'none')}</span>
+      <span class="badge">${esc(e.status)}</span>
+      <span class="msg-text">${esc((e.message_text || '').substring(0, 120))}</span>
+      <button class="btn btn-sm" onclick="loadModEventDetail(${e.id})">DETAIL</button>
+    </div>`).join('') || `<div class="hint">${t('no_data')}</div>`;
+}
+
+async function loadModEventDetail(id) {
+  const e = await api(`/api/moderation/events/detail?id=${id}`);
+  alert(JSON.stringify(e, null, 2));
 }
 
 // ===== STATS =====

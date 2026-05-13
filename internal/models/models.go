@@ -177,6 +177,129 @@ type LLMRouteResult struct {
 	Reason       string `json:"reason"`
 }
 
+// ModerationChatConfig stores moderation settings for exactly one bot/chat pair.
+type ModerationChatConfig struct {
+	ID                   int64  `json:"id"`
+	BotID                int64  `json:"bot_id"`
+	ChatID               int64  `json:"chat_id"`
+	Enabled              bool   `json:"enabled"`
+	AlertChatID          int64  `json:"alert_chat_id"`
+	SkipBotMessages      bool   `json:"skip_bot_messages"`
+	IncludeContext       bool   `json:"include_context"`
+	ContextMessagesLimit int    `json:"context_messages_limit"`
+	ContextMinutes       int    `json:"context_minutes"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
+}
+
+type ModerationProvider struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Kind           string `json:"kind"`
+	APIURL         string `json:"api_url"`
+	APIKey         string `json:"api_key,omitempty"`
+	APIKeyMasked   string `json:"api_key_masked,omitempty"`
+	Model          string `json:"model"`
+	Enabled        bool   `json:"enabled"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type ModerationChatLevel struct {
+	ID                 int64   `json:"id"`
+	BotID              int64   `json:"bot_id"`
+	ChatID             int64   `json:"chat_id"`
+	Level              int     `json:"level"`
+	Name               string  `json:"name"`
+	Enabled            bool    `json:"enabled"`
+	ProviderID         int64   `json:"provider_id"`
+	Required           bool    `json:"required"`
+	OnlyIfUncertain    bool    `json:"only_if_uncertain"`
+	SystemPrompt       string  `json:"system_prompt"`
+	UserPromptTemplate string  `json:"user_prompt_template"`
+	MinConfidence      float64 `json:"min_confidence"`
+	TriggerSeverity    string  `json:"trigger_severity"`
+	Action             string  `json:"action"`
+	DurationSeconds    int64   `json:"duration_seconds"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
+}
+
+type ModerationVerdict struct {
+	Toxic            bool    `json:"toxic"`
+	Severity         string  `json:"severity"`
+	Category         string  `json:"category"`
+	Confidence       float64 `json:"confidence"`
+	NeedsContext     bool    `json:"needs_context"`
+	ContextDependent bool    `json:"context_dependent"`
+	NeedsHumanReview bool    `json:"needs_human_review"`
+	Reason           string  `json:"reason"`
+}
+
+type ModerationEvent struct {
+	ID                    int64                   `json:"id"`
+	BotID                 int64                   `json:"bot_id"`
+	ChatID                int64                   `json:"chat_id"`
+	MessageID             int                     `json:"message_id"`
+	UserID                int64                   `json:"user_id"`
+	Username              string                  `json:"username"`
+	MessageText           string                  `json:"message_text"`
+	MessageDate           int64                   `json:"message_date"`
+	Status                string                  `json:"status"`
+	FinalToxic            bool                    `json:"final_toxic"`
+	FinalSeverity         string                  `json:"final_severity"`
+	FinalCategory         string                  `json:"final_category"`
+	FinalConfidence       float64                 `json:"final_confidence"`
+	FinalReason           string                  `json:"final_reason"`
+	FinalAction           string                  `json:"final_action"`
+	ActionDurationSeconds int64                   `json:"action_duration_seconds"`
+	ActionResult          string                  `json:"action_result"`
+	ActionError           string                  `json:"action_error"`
+	AlertSent             bool                    `json:"alert_sent"`
+	AlertChatID           int64                   `json:"alert_chat_id"`
+	AlertMessageID        int                     `json:"alert_message_id"`
+	CreatedAt             string                  `json:"created_at"`
+	LevelResults          []ModerationLevelResult `json:"level_results,omitempty"`
+}
+
+type ModerationLevelResult struct {
+	ID               int64   `json:"id"`
+	EventID          int64   `json:"event_id"`
+	Level            int     `json:"level"`
+	ProviderID       int64   `json:"provider_id"`
+	ProviderKind     string  `json:"provider_kind"`
+	Model            string  `json:"model"`
+	Toxic            bool    `json:"toxic"`
+	Severity         string  `json:"severity"`
+	Category         string  `json:"category"`
+	Confidence       float64 `json:"confidence"`
+	NeedsContext     bool    `json:"needs_context"`
+	ContextDependent bool    `json:"context_dependent"`
+	NeedsHumanReview bool    `json:"needs_human_review"`
+	Reason           string  `json:"reason"`
+	RawResponse      string  `json:"raw_response"`
+	Error            string  `json:"error"`
+	LatencyMS        int64   `json:"latency_ms"`
+	CreatedAt        string  `json:"created_at"`
+}
+
+type ModerationTestRequest struct {
+	BotID         int64  `json:"bot_id"`
+	ChatID        int64  `json:"chat_id"`
+	MessageText   string `json:"message_text"`
+	RecentContext string `json:"recent_context"`
+	UserID        int64  `json:"user_id"`
+	Username      string `json:"username"`
+}
+
+type ModerationTestResponse struct {
+	FinalVerdict ModerationVerdict       `json:"final_verdict"`
+	FinalAction  string                  `json:"final_action"`
+	Uncertain    bool                    `json:"uncertain"`
+	Results      []ModerationLevelResult `json:"results"`
+}
+
 // BridgeConfig represents a protocol bridge in the database
 type BridgeConfig struct {
 	ID           int64  `json:"id"`
