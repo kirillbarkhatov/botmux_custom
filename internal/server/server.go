@@ -1701,6 +1701,10 @@ func (s *Server) handleAddRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if req.ConditionType == "llm" {
+		writeDisabled(w)
+		return
+	}
 	req.CreatedAt = time.Now().Format(time.RFC3339)
 	id, err := s.store.AddRoute(req)
 	if err != nil {
@@ -1730,6 +1734,10 @@ func (s *Server) handleUpdateRoute(w http.ResponseWriter, r *http.Request) {
 	var req models.Route
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, err)
+		return
+	}
+	if req.ConditionType == "llm" {
+		writeDisabled(w)
 		return
 	}
 	if err := s.store.UpdateRoute(req); err != nil {
@@ -1989,12 +1997,7 @@ func (s *Server) handleBridgeIncoming(w http.ResponseWriter, r *http.Request) {
 // @Router /api/llm-config [get]
 // @Security CookieAuth || BearerAuth
 func (s *Server) handleGetLLMConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := s.store.GetLLMConfig()
-	if err != nil {
-		writeJSON(w, models.LLMConfig{})
-		return
-	}
-	writeJSON(w, cfg)
+	writeJSON(w, models.LLMConfig{Enabled: false})
 }
 
 // handleSaveLLMConfig saves the LLM routing configuration.
@@ -2014,16 +2017,7 @@ func (s *Server) handleSaveLLMConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
-	var cfg models.LLMConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.SaveLLMConfig(cfg); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationConfig(w http.ResponseWriter, r *http.Request) {
@@ -2032,8 +2026,10 @@ func (s *Server) handleModerationConfig(w http.ResponseWriter, r *http.Request) 
 		chatID, _ := strconv.ParseInt(r.URL.Query().Get("chat_id"), 10, 64)
 		cfg, err := s.store.GetModerationChatConfig(botID, chatID)
 		if err != nil {
-			cfg = &models.ModerationChatConfig{BotID: botID, ChatID: chatID, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30, RulesEnabled: true, AILevel2Enabled: true, AILevel2MinIntervalSeconds: 3600, AILevel2ContextMinutes: 60, MaxTextLengthForAI: 4000}
+			cfg = &models.ModerationChatConfig{BotID: botID, ChatID: chatID, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30, RulesEnabled: true, AILevel2Enabled: false, AILevel2MinIntervalSeconds: 3600, AILevel2ContextMinutes: 60, MaxTextLengthForAI: 4000, NewMemberMuteSeconds: 300}
 		}
+		cfg.AILevel2Enabled = false
+		cfg.AILevel2ProviderID = 0
 		_ = moderation.NewService(s.store).EnsureDefaults(botID, chatID)
 		writeJSON(w, cfg)
 		return
@@ -2047,6 +2043,8 @@ func (s *Server) handleModerationConfig(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	cfg.AILevel2Enabled = false
+	cfg.AILevel2ProviderID = 0
 	if err := s.store.SaveModerationChatConfig(cfg); err != nil {
 		writeError(w, err)
 		return
@@ -2056,15 +2054,7 @@ func (s *Server) handleModerationConfig(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleModerationProviders(w http.ResponseWriter, r *http.Request) {
-	providers, err := s.store.ListModerationProviders(true)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if providers == nil {
-		providers = []models.ModerationProvider{}
-	}
-	writeJSON(w, providers)
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationProviderSave(w http.ResponseWriter, r *http.Request) {
@@ -2072,28 +2062,11 @@ func (s *Server) handleModerationProviderSave(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
-	var p models.ModerationProvider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, err)
-		return
-	}
-	if p.Kind == "openai-compatible" {
-		p.Kind = "openai_compatible"
-	}
-	if err := s.store.SaveModerationProvider(p); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationProviderDelete(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
-	if err := s.store.DeleteModerationProvider(id); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationRules(w http.ResponseWriter, r *http.Request) {
@@ -2120,6 +2093,10 @@ func (s *Server) handleModerationRuleSave(w http.ResponseWriter, r *http.Request
 	var rule models.ModerationRule
 	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
 		writeError(w, err)
+		return
+	}
+	if rule.Action == "ban" {
+		writeDisabled(w)
 		return
 	}
 	if err := s.store.SaveModerationRule(rule); err != nil {
@@ -2194,6 +2171,10 @@ func (s *Server) handleModerationRulesBulkUpdate(w http.ResponseWriter, r *http.
 			rule.Mode = *req.Mode
 		}
 		if req.Action != nil {
+			if *req.Action == "ban" {
+				writeDisabled(w)
+				return
+			}
 			rule.Action = *req.Action
 		}
 		if req.DurationSeconds != nil {
@@ -2226,52 +2207,15 @@ func (s *Server) handleModerationRuleTest(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleModerationProviderTest(w http.ResponseWriter, r *http.Request) {
-	var p models.ModerationProvider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, err)
-		return
-	}
-	if p.ID != 0 && p.APIKey == "" {
-		existing, err := s.store.GetModerationProvider(p.ID)
-		if err == nil {
-			p.APIKey = existing.APIKey
-		}
-	}
-	_, err := (&moderation.Client{}).Classify(r.Context(), p, moderation.Level1SystemPrompt, "Target message:\nhello\n\nSender:\ntest (1)")
-	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	writeJSON(w, map[string]any{"ok": true})
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationLevels(w http.ResponseWriter, r *http.Request) {
-	botID, _ := strconv.ParseInt(r.URL.Query().Get("bot_id"), 10, 64)
-	chatID, _ := strconv.ParseInt(r.URL.Query().Get("chat_id"), 10, 64)
-	_ = moderation.NewService(s.store).EnsureDefaults(botID, chatID)
-	levels, err := s.store.GetModerationLevels(botID, chatID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, levels)
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationLevelUpdate(w http.ResponseWriter, r *http.Request) {
-	var level models.ModerationChatLevel
-	if err := json.NewDecoder(r.Body).Decode(&level); err != nil {
-		writeError(w, err)
-		return
-	}
-	if level.Level == 1 || level.Level == 2 {
-		level.Required = true
-		level.OnlyIfUncertain = false
-	}
-	if err := s.store.SaveModerationLevel(level); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeDisabled(w)
 }
 
 func (s *Server) handleModerationEvents(w http.ResponseWriter, r *http.Request) {
@@ -2316,17 +2260,7 @@ func (s *Server) handleModerationAlertChats(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleModerationTestClassify(w http.ResponseWriter, r *http.Request) {
-	var req models.ModerationTestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err)
-		return
-	}
-	resp, err := moderation.NewService(s.store).TestClassify(r.Context(), req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, resp)
+	writeDisabled(w)
 }
 
 // handleBotDescription gets or sets the LLM description for a bot.
@@ -2976,6 +2910,12 @@ func writeError(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+
+func writeDisabled(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	json.NewEncoder(w).Encode(map[string]string{"error": "disabled in minimal mode"})
 }
 
 func IsValidHexColor(s string) bool {

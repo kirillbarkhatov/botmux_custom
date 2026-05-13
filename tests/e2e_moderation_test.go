@@ -57,6 +57,38 @@ func saveModerationRule(t *testing.T, h *e2eHarness, rule models.ModerationRule)
 	}
 }
 
+func makeNewMemberUpdate(updateID int, chatID int64, members ...map[string]any) map[string]any {
+	list := make([]any, 0, len(members))
+	for _, m := range members {
+		list = append(list, m)
+	}
+	return map[string]any{
+		"update_id": float64(updateID),
+		"message": map[string]any{
+			"message_id": float64(updateID * 10),
+			"date":       float64(1700000000 + updateID),
+			"chat":       map[string]any{"id": float64(chatID), "type": "supergroup", "title": "Source"},
+			"from":       map[string]any{"id": float64(1), "is_bot": false, "username": "inviter"},
+			"new_chat_members": list,
+		},
+	}
+}
+
+func requestJSONInt(body []byte, key string) int64 {
+	var m map[string]any
+	_ = json.Unmarshal(body, &m)
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
 func TestE2E_Moderation(t *testing.T) {
 	t.Run("enabled chat sends alert with same bot and deduplicates", func(t *testing.T) {
 		h := setupE2E(t)
@@ -115,7 +147,7 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 	})
 
-	t.Run("provider API masks key and alert chats are current bot only", func(t *testing.T) {
+	t.Run("provider API disabled and alert chats are current bot only", func(t *testing.T) {
 		h := setupE2E(t, withHTTPServer())
 		botA := registerAndManage(h, "mod03a:token", "modbot03a")
 		botB := registerAndManage(h, "mod03b:token", "modbot03b")
@@ -130,10 +162,8 @@ func TestE2E_Moderation(t *testing.T) {
 			t.Fatalf("providers request: %v", err)
 		}
 		defer resp.Body.Close()
-		var providers []models.ModerationProvider
-		_ = json.NewDecoder(resp.Body).Decode(&providers)
-		if len(providers) == 0 || providers[0].APIKey != "" || providers[0].APIKeyMasked == "" {
-			t.Fatalf("provider key was not masked: %+v", providers)
+		if resp.StatusCode != http.StatusGone {
+			t.Fatalf("expected providers API disabled with 410, got %d", resp.StatusCode)
 		}
 
 		req, _ = http.NewRequest(http.MethodGet, h.ts.URL+"/api/moderation/alert-chats?bot_id="+jsonNumber(botA), nil)
@@ -168,7 +198,7 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 	})
 
-	t.Run("ban action targets source chat", func(t *testing.T) {
+	t.Run("ban action disabled in minimal mode", func(t *testing.T) {
 		h := setupE2E(t)
 		llm := newFakeLLM(t)
 		llm.SetNextRoute(toxicVerdict())
@@ -179,9 +209,68 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 300, Enabled: true, Kind: "keyword", Pattern: "bad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "ban", DurationSeconds: 3600})
 		h.InjectUpdate(botID, makeTextUpdate(6, 300, 66, "ban_me", "bad"))
-		reqs := h.fake.RequestsFor("banChatMember")
-		if len(reqs) != 1 || !strings.Contains(string(reqs[0].body), `"chat_id":300`) && !strings.Contains(string(reqs[0].body), "chat_id=300") {
-			t.Fatalf("expected ban in source chat 300, got %+v", reqs)
+		if got := len(h.fake.RequestsFor("banChatMember")); got != 0 {
+			t.Fatalf("expected no ban request in minimal mode, got %d", got)
+		}
+	})
+
+	t.Run("new member mute clamps duration and skips bots and self", func(t *testing.T) {
+		h := setupE2E(t)
+		botID := registerAndManage(h, "mod07:token", "modbot07")
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 700, Enabled: true, NewMemberMuteEnabled: true, NewMemberMuteSeconds: 60}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		before := time.Now().Unix()
+		h.InjectUpdate(botID, makeNewMemberUpdate(7, 700,
+			map[string]any{"id": float64(701), "is_bot": false, "username": "newbie"},
+			map[string]any{"id": float64(702), "is_bot": true, "username": "helperbot"},
+			map[string]any{"id": float64(100), "is_bot": true, "username": "modbot07"},
+		))
+		reqs := h.fake.RequestsFor("restrictChatMember")
+		if len(reqs) != 1 {
+			t.Fatalf("expected one new member mute, got %d", len(reqs))
+		}
+		if got := requestJSONInt(reqs[0].body, "user_id"); got != 701 {
+			t.Fatalf("expected user 701 muted, got %d body=%s", got, string(reqs[0].body))
+		}
+		until := requestJSONInt(reqs[0].body, "until_date")
+		if got := until - before; got < 300 || got > 302 {
+			t.Fatalf("expected clamped 300s mute, got until delta %d body=%s", got, string(reqs[0].body))
+		}
+	})
+
+	t.Run("new member mute disabled config does nothing", func(t *testing.T) {
+		h := setupE2E(t)
+		botID := registerAndManage(h, "mod08:token", "modbot08")
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 800, Enabled: true, NewMemberMuteEnabled: false, NewMemberMuteSeconds: 300}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		h.InjectUpdate(botID, makeNewMemberUpdate(8, 800, map[string]any{"id": float64(801), "is_bot": false, "username": "newbie"}))
+		if got := len(h.fake.RequestsFor("restrictChatMember")); got != 0 {
+			t.Fatalf("expected no mute with disabled config, got %d", got)
+		}
+	})
+
+	t.Run("new member mute skips admins", func(t *testing.T) {
+		h := setupE2E(t)
+		h.fake.SetHandler("getChatAdministrators", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"result":[{"status":"administrator","user":{"id":901,"is_bot":false,"first_name":"Admin","username":"admin"},"can_restrict_members":true}]}`))
+		})
+		botID := registerAndManage(h, "mod09:token", "modbot09")
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 900, Enabled: true, NewMemberMuteEnabled: true, NewMemberMuteSeconds: 300}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		h.InjectUpdate(botID, makeNewMemberUpdate(9, 900,
+			map[string]any{"id": float64(901), "is_bot": false, "username": "admin"},
+			map[string]any{"id": float64(902), "is_bot": false, "username": "member"},
+		))
+		reqs := h.fake.RequestsFor("restrictChatMember")
+		if len(reqs) != 1 {
+			t.Fatalf("expected one non-admin mute, got %d", len(reqs))
+		}
+		if got := requestJSONInt(reqs[0].body, "user_id"); got != 902 {
+			t.Fatalf("expected non-admin user 902 muted, got %d body=%s", got, string(reqs[0].body))
 		}
 	})
 }
@@ -203,7 +292,7 @@ func TestE2E_ModerationAILevel2RateLimit(t *testing.T) {
 	saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 100, Enabled: true, Kind: "keyword", Pattern: "ambiguous", Category: "other", Severity: "medium", Confidence: 0.8, Mode: "soft", Action: "none"})
 	h.InjectUpdate(botID, makeTextUpdate(4, 100, 88, "maybe", "ambiguous"))
 	h.InjectUpdate(botID, makeTextUpdate(5, 100, 88, "maybe", "ambiguous"))
-	if got := llm.RequestsCountFor("/chat/completions"); got != 1 {
-		t.Fatalf("expected AI Level 2 once due to per-chat rate limit, got %d", got)
+	if got := llm.RequestsCountFor("/chat/completions"); got != 0 {
+		t.Fatalf("expected AI Level 2 disabled in minimal mode, got %d calls", got)
 	}
 }

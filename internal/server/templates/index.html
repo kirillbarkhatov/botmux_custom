@@ -1523,7 +1523,7 @@ body::before { display: none; }
   <div class="section-label">
     BOTS
     <div style="display:flex;gap:4px">
-      <button class="btn btn-sm" onclick="showLLMModal()" style="padding:2px 8px;font-size:9px;color:var(--cyan);border-color:var(--cyan-dim)" id="llmSettingsBtn">LLM</button>
+      <button class="btn btn-sm" onclick="showLLMModal()" style="display:none;padding:2px 8px;font-size:9px;color:var(--cyan);border-color:var(--cyan-dim)" id="llmSettingsBtn">LLM</button>
       <button class="btn btn-sm btn-primary" onclick="showBotModal()" style="padding:2px 8px;font-size:9px">+ ADD</button>
     </div>
   </div>
@@ -1740,7 +1740,7 @@ body::before { display: none; }
             <div class="mod-card-head">
               <div>
                 <div class="mod-card-title" data-i18n="moderation_how_it_works">How it works</div>
-                <div class="mod-card-subtitle" data-i18n="moderation_logic_short">From message to rule, optional AI, action, and log.</div>
+                <div class="mod-card-subtitle">From message to local rule, action, and log.</div>
               </div>
               <button class="btn btn-sm" onclick="openModerationLogicModal()" data-i18n="details">Details</button>
             </div>
@@ -1768,7 +1768,7 @@ body::before { display: none; }
           <div id="modRules" class="mod-list"></div>
         </div>
 
-        <div class="mod-card">
+        <div class="mod-card" style="display:none">
           <div class="mod-card-head">
             <div>
               <div class="mod-card-title" data-i18n="moderation_providers">Providers</div>
@@ -1779,7 +1779,7 @@ body::before { display: none; }
           <div id="modProviders" class="mod-list"></div>
         </div>
 
-        <div class="mod-card">
+        <div class="mod-card" style="display:none">
           <div class="mod-card-head">
             <div>
               <div class="mod-card-title" data-i18n="moderation_test">Test classification</div>
@@ -1848,7 +1848,7 @@ body::before { display: none; }
       <label>Polling Timeout (seconds)</label>
       <input type="number" id="botFormTimeout" value="30" min="5" max="60">
     </div>
-    <div class="modal-field">
+    <div class="modal-field" style="display:none">
       <label id="botDescriptionLabel">Bot Description</label>
       <textarea id="botFormDescription" style="width:100%;min-height:72px;resize:vertical" placeholder=""></textarea>
       <div id="botDescriptionHint" style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:4px"></div>
@@ -1961,7 +1961,6 @@ body::before { display: none; }
         <option value="text">Text match (regex)</option>
         <option value="user_id">From user (by ID)</option>
         <option value="chat_id">From chat (by ID)</option>
-        <option value="llm">LLM (AI)</option>
       </select>
     </div>
     <div class="modal-field" id="routeCondValueField">
@@ -2698,7 +2697,7 @@ function updateModalLabels() {
     condTypeSelect.options[0].textContent = t('cond_text_match');
     condTypeSelect.options[1].textContent = t('cond_from_user');
     condTypeSelect.options[2].textContent = t('cond_from_chat');
-    condTypeSelect.options[3].textContent = t('cond_llm');
+    if (condTypeSelect.options[3]) condTypeSelect.options[3].textContent = t('cond_llm');
   }
   const actionSelect = document.getElementById('routeAction');
   if (actionSelect && actionSelect.options.length >= 3) {
@@ -3860,17 +3859,15 @@ function modStatusBadge(on, onText, offText) {
 function modBoolText(v) { return v ? t('enabled') : t('disabled'); }
 
 function modProviderName(id) {
-  const p = modProvidersCache.find(x => Number(x.id) === Number(id));
-  return p ? `${p.name} (${p.model || p.kind || 'AI'})` : t('select_provider');
+  return 'Disabled';
 }
 
 function renderModPipelineFlow(targetID = 'modPipelineFlow', detailed = false) {
   const steps = [
     ['1', t('moderation_step_message'), t('moderation_step_message_text'), 'clean'],
     ['2', t('moderation_step_gate'), t('moderation_step_gate_text'), 'status-skipped'],
-    ['3', 'Level 1', t('moderation_step_l1_text'), 'alert'],
-    ['4', 'Level 2 AI', t('moderation_step_l2_text'), 'medium'],
-    ['5', t('moderation_step_action'), t('moderation_step_action_text'), 'high']
+    ['3', 'Local rules', t('moderation_step_l1_text'), 'alert'],
+    ['4', t('moderation_step_action'), t('moderation_step_action_text'), 'high']
   ];
   const cards = steps.map(s => `
     <div class="mod-step">
@@ -3889,13 +3886,12 @@ function renderModerationOverview() {
   const cfg = modConfigCache || {};
   const enabledRules = modRulesCache.filter(r => r.enabled).length;
   const errors = modEventsCache.filter(e => e.status === 'error').length;
-  const provider = modProviderName(cfg.ai_level2_provider_id || 0);
   const subtitle = document.getElementById('modChatSubtitle');
   if (subtitle) subtitle.textContent = currentChat.title || currentChat.username || currentChat.id || '—';
   const badges = [
     modStatusBadge(!!cfg.enabled, 'Enabled', 'Disabled'),
     modStatusBadge(cfg.rules_enabled !== false, 'Rules On', 'Rules Off'),
-    modStatusBadge(cfg.ai_level2_enabled !== false, 'AI L2 On', 'AI L2 Off'),
+    modStatusBadge(!!cfg.new_member_mute_enabled, 'New member mute On', 'New member mute Off'),
     modStatusBadge(!!cfg.alert_chat_id, 'Alert chat set', 'Alert chat missing')
   ].join('');
   const hb = document.getElementById('modHeaderBadges');
@@ -3904,14 +3900,14 @@ function renderModerationOverview() {
   if (dash) dash.innerHTML = `
     <div class="stat-card"><div class="stat-value">${cfg.enabled ? 'ON' : 'OFF'}</div><div class="stat-label">${t('status')}</div></div>
     <div class="stat-card"><div class="stat-value">${enabledRules}/${modRulesCache.length}</div><div class="stat-label">${t('moderation_rules')}</div></div>
-    <div class="stat-card"><div class="stat-value" style="font-size:14px">${esc(cfg.ai_level2_enabled === false ? 'OFF' : provider)}</div><div class="stat-label">AI Level 2</div></div>
+    <div class="stat-card"><div class="stat-value">${cfg.new_member_mute_enabled ? Math.round((cfg.new_member_mute_seconds || 300) / 60) + 'm' : 'OFF'}</div><div class="stat-label">New member mute</div></div>
     <div class="stat-card"><div class="stat-value">${modEventsCache.length}${errors ? ` / ${errors}` : ''}</div><div class="stat-label">${t('moderation_log')}</div></div>`;
   const summary = document.getElementById('modGeneralSummary');
   if (summary) summary.innerHTML = `
     <div class="mod-meta-row"><span>${t('status')}</span><span>${modStatusBadge(!!cfg.enabled, t('enabled'), t('disabled'))}</span></div>
     <div class="mod-meta-row"><span>${t('moderation_alert_chat')}</span><span>${cfg.alert_chat_id ? cfg.alert_chat_id : t('none')}</span></div>
     <div class="mod-meta-row"><span>${t('moderation_rules_enabled')}</span><span>${modBoolText(cfg.rules_enabled !== false)}</span></div>
-    <div class="mod-meta-row"><span>Level 2 AI</span><span>${modBoolText(cfg.ai_level2_enabled !== false)} · ${esc(provider)}</span></div>
+    <div class="mod-meta-row"><span>New member mute</span><span>${cfg.new_member_mute_enabled ? Math.round((cfg.new_member_mute_seconds || 300) / 60) + ' min' : t('disabled')}</span></div>
     <div class="mod-meta-row"><span>${t('moderation_skip_bots')}</span><span>${modBoolText(cfg.skip_bot_messages !== false)}</span></div>
     <div class="mod-meta-row"><span>${t('moderation_log_clean')}</span><span>${modBoolText(!!cfg.log_clean_messages)}</span></div>`;
   renderModPipelineFlow();
@@ -3919,8 +3915,7 @@ function renderModerationOverview() {
 
 async function loadModeration() {
   if (!currentBotID || !currentChat) return;
-  await Promise.all([loadModerationConfig(), loadModProviders()]);
-  fillAI2ProviderOptions();
+  await loadModerationConfig();
   await Promise.all([loadModerationRules(), loadModerationEvents()]);
   renderModerationOverview();
 }
@@ -3935,12 +3930,10 @@ async function loadModerationConfig() {
   document.getElementById('modContextMinutes').value = cfg.context_minutes || 30;
   document.getElementById('modRulesEnabled').checked = cfg.rules_enabled !== false;
   document.getElementById('modLogClean').checked = !!cfg.log_clean_messages;
-  document.getElementById('modMaxAIText').value = cfg.max_text_length_for_ai || 4000;
-  document.getElementById('modAI2Enabled').checked = cfg.ai_level2_enabled !== false;
-  document.getElementById('modAI2Interval').value = cfg.ai_level2_min_interval_seconds || 3600;
-  document.getElementById('modAI2Context').value = cfg.ai_level2_context_minutes || 60;
-  document.getElementById('modAI2LastRun').value = cfg.ai_level2_last_run_at || '';
-  document.getElementById('modAI2Provider').dataset.value = String(cfg.ai_level2_provider_id || 0);
+  const newMuteEnabled = document.getElementById('modNewMemberMuteEnabled');
+  const newMuteSeconds = document.getElementById('modNewMemberMuteSeconds');
+  if (newMuteEnabled) newMuteEnabled.checked = !!cfg.new_member_mute_enabled;
+  if (newMuteSeconds) newMuteSeconds.value = String(cfg.new_member_mute_seconds || 300);
   const chats = await api(`/api/moderation/alert-chats?bot_id=${currentBotID}`);
   modAlertChatsCache = chats || [];
   modAlertChatsLen = chats.length;
@@ -3971,12 +3964,14 @@ async function saveModerationConfig() {
     context_messages_limit: parseInt(document.getElementById('modContextLimit').value || '30'),
     context_minutes: parseInt(document.getElementById('modContextMinutes').value || '30'),
     rules_enabled: document.getElementById('modRulesEnabled').checked,
-    ai_level2_enabled: document.getElementById('modAI2Enabled').checked,
-    ai_level2_provider_id: parseInt(document.getElementById('modAI2Provider').value || '0'),
-    ai_level2_min_interval_seconds: parseInt(document.getElementById('modAI2Interval').value || '3600'),
-    ai_level2_context_minutes: parseInt(document.getElementById('modAI2Context').value || '60'),
+    ai_level2_enabled: false,
+    ai_level2_provider_id: 0,
+    ai_level2_min_interval_seconds: 3600,
+    ai_level2_context_minutes: 60,
     log_clean_messages: document.getElementById('modLogClean').checked,
-    max_text_length_for_ai: parseInt(document.getElementById('modMaxAIText').value || '4000')
+    max_text_length_for_ai: 4000,
+    new_member_mute_enabled: document.getElementById('modNewMemberMuteEnabled').checked,
+    new_member_mute_seconds: parseInt(document.getElementById('modNewMemberMuteSeconds').value || '300')
   };
   await api('/api/moderation/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   modConfigCache = {...modConfigCache, ...body};
@@ -3987,7 +3982,6 @@ async function saveModerationConfig() {
 
 function openModerationSettingsModal() {
   document.getElementById('modSettingsHeaderBadges').innerHTML = document.getElementById('modHeaderBadges').innerHTML;
-  fillAI2ProviderOptions();
   updateModAlertHint();
   document.getElementById('modSettingsModal').style.display = 'flex';
 }
@@ -4237,8 +4231,8 @@ function renderModRuleCategory(group, idx) {
       <select id="modCatSeverity${idx}"><option value="">severity: keep</option><option>none</option><option>low</option><option>medium</option><option>high</option></select>
       <input id="modCatConfidence${idx}" type="number" min="0" max="1" step="0.01" placeholder="confidence">
       <select id="modCatMode${idx}"><option value="">mode: keep</option><option>allow</option><option>soft</option><option>hard</option></select>
-      <select id="modCatAction${idx}"><option value="">action: keep</option><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
-      <input id="modCatDuration${idx}" type="number" min="0" placeholder="duration">
+      <select id="modCatAction${idx}"><option value="">action: keep</option><option>none</option><option>mute</option></select>
+      <select id="modCatDuration${idx}"><option value="">duration: keep</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">60 minutes</option></select>
       <button class="btn btn-sm" onclick="bulkUpdateModRuleCategory(${idx})">APPLY</button>
     </div>
     ${open ? renderModRuleRows(group.rules) : ''}
@@ -4302,7 +4296,7 @@ function showModRuleForm() {
   document.getElementById('modRuleConfidence').value = '0.70';
   document.getElementById('modRuleMode').value = 'soft';
   document.getElementById('modRuleAction').value = 'none';
-  document.getElementById('modRuleDuration').value = '0';
+  document.getElementById('modRuleDuration').value = '300';
   document.getElementById('modRuleNotes').value = '';
   updateModRuleActionHint();
   document.getElementById('modRuleModal').style.display = 'flex';
@@ -4327,7 +4321,7 @@ function editModRule(id) {
   document.getElementById('modRuleConfidence').value = r.confidence || 0.7;
   document.getElementById('modRuleMode').value = r.mode || 'soft';
   document.getElementById('modRuleAction').value = r.action || 'none';
-  document.getElementById('modRuleDuration').value = r.duration_seconds || 0;
+  document.getElementById('modRuleDuration').value = String(r.duration_seconds || 300);
   document.getElementById('modRuleNotes').value = r.notes || '';
   updateModRuleActionHint();
 }
@@ -4338,7 +4332,7 @@ function closeModRuleModal() {
 
 function updateModRuleActionHint() {
   const action = document.getElementById('modRuleAction')?.value || 'none';
-  const show = action === 'mute' || action === 'ban';
+  const show = action === 'mute';
   document.getElementById('modRuleDurationField').style.display = show ? 'block' : 'none';
   document.getElementById('modRuleActionWarning').style.display = show ? 'block' : 'none';
 }
@@ -5387,7 +5381,7 @@ function clearLogsView() {
       <div class="profile-avatar">M</div>
       <div class="profile-identity">
         <div class="profile-name" data-i18n="moderation_general">Moderation settings</div>
-        <div class="profile-id" data-i18n="moderation_pipeline_hint">Local rules check messages first; AI Level 2 is used only for rule matches.</div>
+        <div class="profile-id">Local rules only. AI moderation is disabled in minimal mode.</div>
         <div id="modSettingsHeaderBadges" class="mod-badges" style="justify-content:flex-start;margin-top:6px"></div>
       </div>
     </div>
@@ -5407,6 +5401,14 @@ function clearLogsView() {
       <div class="hint" style="margin-top:10px" id="modAlertHint"></div>
     </div>
     <div class="profile-section">
+      <div class="profile-section-title">New member mute</div>
+      <label class="modal-perm"><input type="checkbox" id="modNewMemberMuteEnabled"> <span>Mute new members</span></label>
+      <div class="mod-form-grid">
+        <div class="mod-field"><label>Duration</label><select id="modNewMemberMuteSeconds"><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">60 minutes</option></select></div>
+      </div>
+      <div class="hint" style="margin-top:10px">Bot must be group admin with Restrict members permission.</div>
+    </div>
+    <div class="profile-section" style="display:none">
       <div class="profile-section-title" data-i18n="moderation_context">Context</div>
       <label class="modal-perm"><input type="checkbox" id="modIncludeContext"> <span data-i18n="moderation_include_context">Include recent context</span></label>
       <div class="mod-form-grid">
@@ -5415,7 +5417,7 @@ function clearLogsView() {
         <div class="mod-field"><label data-i18n="moderation_max_ai_text">Max text length for AI</label><input id="modMaxAIText" type="number" min="200" max="20000"></div>
       </div>
     </div>
-    <div class="profile-section">
+    <div class="profile-section" style="display:none">
       <div class="profile-section-title" data-i18n="moderation_level2">Level 2: contextual AI</div>
       <div class="hint" data-i18n="moderation_level2_hint">AI Level 2 runs only after Level 1 rule matches and no more than once per configured interval.</div>
       <label class="modal-perm" style="margin-top:10px"><input type="checkbox" id="modAI2Enabled"> <span data-i18n="moderation_ai2_enabled">Enable AI Level 2</span></label>
@@ -5472,8 +5474,8 @@ function clearLogsView() {
     <div class="profile-section">
       <div class="profile-section-title" data-i18n="moderation_action">Action</div>
       <div class="mod-form-grid">
-        <div class="mod-field"><label>Action</label><select id="modRuleAction" onchange="updateModRuleActionHint()"><option>none</option><option>alert</option><option>mute</option><option>ban</option></select></div>
-        <div class="mod-field" id="modRuleDurationField"><label>Duration</label><input id="modRuleDuration" type="number" min="0"></div>
+        <div class="mod-field"><label>Action</label><select id="modRuleAction" onchange="updateModRuleActionHint()"><option>none</option><option>mute</option></select></div>
+        <div class="mod-field" id="modRuleDurationField"><label>Duration</label><select id="modRuleDuration"><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">60 minutes</option></select></div>
       </div>
       <div id="modRuleActionWarning" class="mod-warning" style="display:none;margin-top:8px" data-i18n="moderation_action_warning">Action is applied to the user in the source chat. Administrators are protected from actions.</div>
     </div>

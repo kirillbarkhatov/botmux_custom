@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
@@ -105,7 +104,6 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 	hardLevel := actionLevelFromPrefilter(prefilter)
 	if prefilter.Decision == "hard_match" && hardLevel.Action != "" && hardLevel.Action != "none" {
 		event.FinalAction = hardLevel.Action
-		event.ActionDurationSeconds = hardLevel.DurationSeconds
 		results, _ := s.store.GetModerationLevelResults(eventID)
 		if err := s.applyAction(cfg, msg, &event, hardLevel, results, bot); err != nil {
 			event.ActionError = err.Error()
@@ -117,64 +115,11 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 		return
 	}
 
-	lastRun := parseTime(cfg.AILevel2LastRunAt)
-	if !ShouldRunAILevel2(prefilter, cfg, lastRun) {
-		event.ActionError = aiSkipReason(cfg, lastRun)
-		if hardLevel.Action != "" && hardLevel.Action != "none" {
-			event.FinalAction = hardLevel.Action
-			event.ActionDurationSeconds = hardLevel.DurationSeconds
-			results, _ := s.store.GetModerationLevelResults(eventID)
-			if err := s.applyAction(cfg, msg, &event, hardLevel, results, bot); err != nil {
-				event.ActionError = err.Error()
-				event.Status = "error"
-			}
-		}
-		_ = s.store.UpdateModerationEvent(event)
-		return
-	}
-
-	aiRes := s.runAILevel2(ctx, cfg, msg, prefilter)
-	aiRes.EventID = eventID
-	_ = s.store.SaveModerationLevelResult(aiRes)
-	if aiRes.Error == "" {
-		now := time.Now().Format(time.RFC3339)
-		_ = s.store.UpdateModerationAILevel2LastRun(msg.BotID, msg.ChatID, now)
-		cfg.AILevel2LastRunAt = now
-		event.FinalToxic = aiRes.Toxic
-		event.FinalSeverity = aiRes.Severity
-		event.FinalCategory = aiRes.Category
-		event.FinalConfidence = aiRes.Confidence
-		event.FinalReason = aiRes.Reason
-	} else {
-		event.ActionError = "AI Level 2 failed: " + aiRes.Error
-	}
-	if !event.FinalToxic {
-		event.Status = "ok"
-		event.FinalAction = "none"
-		_ = s.store.UpdateModerationEvent(event)
-		return
-	}
-	actionLevel := models.ModerationChatLevel{Level: 2, Action: "alert", TriggerSeverity: "low", MinConfidence: 0.70}
-	event.FinalAction = actionLevel.Action
-	results, _ := s.store.GetModerationLevelResults(eventID)
-	if err := s.applyAction(cfg, msg, &event, actionLevel, results, bot); err != nil {
-		event.ActionError = err.Error()
-		event.Status = "error"
-	}
 	_ = s.store.UpdateModerationEvent(event)
 }
 
 func (s *Service) TestClassify(ctx context.Context, req models.ModerationTestRequest) (*models.ModerationTestResponse, error) {
-	if err := s.EnsureDefaults(req.BotID, req.ChatID); err != nil {
-		return nil, err
-	}
-	cfg, err := s.store.GetModerationChatConfig(req.BotID, req.ChatID)
-	if err != nil {
-		cfg = &models.ModerationChatConfig{BotID: req.BotID, ChatID: req.ChatID, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30}
-	}
-	msg := Message{BotID: req.BotID, ChatID: req.ChatID, MessageID: -1, UserID: req.UserID, Username: req.Username, Text: req.MessageText}
-	final, actionLevel, uncertain, results := s.evaluate(ctx, cfg, msg, 0)
-	return &models.ModerationTestResponse{FinalVerdict: final, FinalAction: actionLevel.Action, Uncertain: uncertain, Results: results}, nil
+	return nil, fmt.Errorf("AI moderation classification is disabled in minimal moderation mode")
 }
 
 func (s *Service) TestRules(req models.ModerationRuleTestRequest) (*models.ModerationRuleTestResponse, error) {
@@ -201,7 +146,7 @@ func (s *Service) TestRules(req models.ModerationRuleTestRequest) (*models.Moder
 	}
 	return &models.ModerationRuleTestResponse{
 		NormalizedText: result.NormalizedText, Decision: result.Decision, MatchedRules: result.MatchedRules,
-		WouldRunAILevel2: ShouldRunAILevel2(result, cfg, lastRun), AIRateLimited: rateLimited, NextAIAllowedAt: next,
+		WouldRunAILevel2: false, AIRateLimited: rateLimited, NextAIAllowedAt: next,
 	}, nil
 }
 
@@ -334,43 +279,6 @@ func aiSkipReason(cfg *models.ModerationChatConfig, lastRun time.Time) string {
 		return "AI Level 2 skipped: rate limited until " + next.Format(time.RFC3339)
 	}
 	return "AI Level 2 skipped"
-}
-
-func (s *Service) evaluate(ctx context.Context, cfg *models.ModerationChatConfig, msg Message, eventID int64) (models.ModerationVerdict, models.ModerationChatLevel, bool, []models.ModerationLevelResult) {
-	levels, _ := s.store.GetModerationLevels(msg.BotID, msg.ChatID)
-	sort.Slice(levels, func(i, j int) bool { return levels[i].Level < levels[j].Level })
-	recent := s.recentContext(msg, cfg)
-	var results []models.ModerationLevelResult
-	var verdicts []models.ModerationVerdict
-	uncertain := false
-	for _, level := range levels {
-		if !level.Enabled {
-			continue
-		}
-		if level.Level == 3 && !uncertain {
-			continue
-		}
-		res := s.runLevel(ctx, level, msg, recent, results)
-		if eventID != 0 {
-			res.EventID = eventID
-			_ = s.store.SaveModerationLevelResult(res)
-		}
-		results = append(results, res)
-		if res.Error != "" {
-			uncertain = true
-			continue
-		}
-		v := models.ModerationVerdict{Toxic: res.Toxic, Severity: res.Severity, Category: res.Category, Confidence: res.Confidence, NeedsContext: res.NeedsContext, ContextDependent: res.ContextDependent, NeedsHumanReview: res.NeedsHumanReview, Reason: res.Reason}
-		verdicts = append(verdicts, v)
-		if level.Level <= 2 && (!passesThreshold(v, level) || v.NeedsContext || v.NeedsHumanReview) {
-			uncertain = true
-		}
-		if len(verdicts) >= 2 && verdicts[0].Toxic != verdicts[1].Toxic {
-			uncertain = true
-		}
-	}
-	final, actionLevel := finalDecision(levels, verdicts)
-	return final, actionLevel, uncertain, results
 }
 
 func (s *Service) runLevel(ctx context.Context, level models.ModerationChatLevel, msg Message, recent string, prior []models.ModerationLevelResult) models.ModerationLevelResult {
@@ -526,23 +434,32 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 	if isAdmin(bot, msg.ChatID, msg.UserID) {
 		return fmt.Errorf("refusing to apply %s to chat administrator", action)
 	}
-	until := time.Now().Add(time.Duration(level.DurationSeconds) * time.Second).Unix()
-	if level.DurationSeconds <= 0 {
-		until = 0
-	}
 	switch action {
 	case "mute":
+		duration := NormalizeMuteDurationSeconds(level.DurationSeconds)
+		until := time.Now().Add(time.Duration(duration) * time.Second).Unix()
 		if err := bot.MuteUser(msg.ChatID, msg.UserID, until); err != nil {
 			return err
 		}
-		event.ActionResult = "muted in source chat"
+		event.ActionDurationSeconds = duration
+		event.ActionResult = fmt.Sprintf("muted in source chat for %ds", duration)
 	case "ban":
-		if err := bot.BanUserUntil(msg.ChatID, msg.UserID, until); err != nil {
-			return err
-		}
-		event.ActionResult = "banned in source chat"
+		return fmt.Errorf("ban action is disabled in minimal moderation mode")
 	}
 	return nil
+}
+
+func NormalizeMuteDurationSeconds(seconds int64) int64 {
+	if seconds <= 0 {
+		return 300
+	}
+	if seconds < 300 {
+		return 300
+	}
+	if seconds > 3600 {
+		return 3600
+	}
+	return seconds
 }
 
 func isAdmin(bot ActionBot, chatID, userID int64) bool {

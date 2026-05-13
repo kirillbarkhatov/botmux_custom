@@ -29,3 +29,13 @@ func TestEvaluateRulesUnicodeRegexWordChar(t *testing.T) {
 		t.Fatalf("expected soft_match, got %+v", got)
 	}
 }
+
+func TestEvaluateRulesProfanityHardMute(t *testing.T) {
+	rules := []models.ModerationRule{
+		{ID: 1, Enabled: true, Language: "ru", Kind: "regex", Pattern: `(?i)\b(бля(?:д[ьи]|ть)?|сука|хуй|ху[её]\w*|пизд\w*|п[ие]здец|[её]б\w*)\b`, Category: "profanity", Severity: "medium", Confidence: 0.90, Mode: "hard", Action: "mute", DurationSeconds: 300},
+	}
+	got := EvaluateRules("б.л.я.дь", rules)
+	if got.Decision != "hard_match" || got.Action != "mute" || got.DurationSeconds != 300 || got.Category != "profanity" {
+		t.Fatalf("expected hard profanity mute, got %+v", got)
+	}
+}

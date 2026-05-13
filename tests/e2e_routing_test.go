@@ -1,13 +1,10 @@
 package tests
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/skrashevich/botmux/internal/bot"
-	llmpkg "github.com/skrashevich/botmux/internal/llm"
 	"github.com/skrashevich/botmux/internal/models"
 )
 
@@ -210,23 +207,12 @@ func TestE2E_Routing(t *testing.T) {
 		}
 	})
 
-	// R-04: LLM-based routing via fakeLLM
-	t.Run("R04_LLM_Routing", func(t *testing.T) {
+	// R-04: LLM routing is disabled in minimal mode.
+	t.Run("R04_LLM_Routing_Disabled", func(t *testing.T) {
 		h := setupE2E(t)
 		llm := newFakeLLM(t)
 
 		srcBot := registerAndManage(h, "src04:token", "srcbot04")
-		tgtBot := registerAndManage(h, "tgt04:token", "tgtbot04")
-
-		// Configure the fake LLM to route to tgtBot chat 200.
-		llm.SetNextRoute(map[string]any{
-			"target_bot_id":  float64(tgtBot),
-			"target_chat_id": float64(200),
-			"action":         "forward",
-			"reason":         "test",
-		})
-
-		// Persist LLM config pointing at the fake server.
 		if err := h.store.SaveLLMConfig(models.LLMConfig{
 			APIURL:  llm.URL(),
 			APIKey:  "test-key",
@@ -236,36 +222,10 @@ func TestE2E_Routing(t *testing.T) {
 			t.Fatalf("SaveLLMConfig: %v", err)
 		}
 
-		// Reload the LLM router so it picks up the saved config.
-		h.proxy.SetLLMRouter(llmpkg.NewRouter(h.store))
-
-		// Inject a message — applyLLMRoutes should call the fake LLM.
 		h.InjectUpdate(srcBot, makeTextUpdate(1, 100, 7, "alice", "please route this"))
 
-		// Verify the fake LLM received exactly one /chat/completions call.
-		if cnt := llm.RequestsCountFor("/chat/completions"); cnt != 1 {
-			t.Errorf("R04: expected 1 LLM /chat/completions call, got %d", cnt)
-		}
-
-		// Verify the LLM request body referenced the message text.
-		reqs := llm.Requests()
-		if len(reqs) == 0 {
-			t.Fatal("R04: no LLM requests recorded")
-		}
-		bodyBytes, _ := json.Marshal(reqs[0].Body)
-		bodyStr := string(bodyBytes)
-		if !strings.Contains(bodyStr, "please route this") {
-			t.Errorf("R04: LLM request body does not contain message text: %s", bodyStr)
-		}
-
-		// Verify a sendMessage was sent to chat 200.
-		sends := h.fake.RequestsFor("sendMessage")
-		if len(sends) == 0 {
-			t.Fatal("R04: expected sendMessage from LLM route, got 0")
-		}
-		chatID := parseChatID(nil, sends[len(sends)-1].body)
-		if chatID != 200 {
-			t.Errorf("R04: expected sendMessage to chat_id=200, got %d", chatID)
+		if cnt := llm.RequestsCountFor("/chat/completions"); cnt != 0 {
+			t.Errorf("R04: expected 0 LLM /chat/completions calls in minimal mode, got %d", cnt)
 		}
 	})
 }

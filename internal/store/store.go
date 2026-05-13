@@ -316,6 +316,8 @@ func (s *Store) migrate() error {
 			ai_level2_last_run_at TEXT NOT NULL DEFAULT '',
 			log_clean_messages INTEGER NOT NULL DEFAULT 0,
 			max_text_length_for_ai INTEGER NOT NULL DEFAULT 4000,
+			new_member_mute_enabled INTEGER NOT NULL DEFAULT 0,
+			new_member_mute_seconds INTEGER NOT NULL DEFAULT 300,
 			created_at TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL DEFAULT '',
 			UNIQUE(bot_id, chat_id)
@@ -435,6 +437,8 @@ func (s *Store) migrate() error {
 		{"ai_level2_last_run_at", "TEXT NOT NULL DEFAULT ''"},
 		{"log_clean_messages", "INTEGER NOT NULL DEFAULT 0"},
 		{"max_text_length_for_ai", "INTEGER NOT NULL DEFAULT 4000"},
+		{"new_member_mute_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_mute_seconds", "INTEGER NOT NULL DEFAULT 300"},
 	} {
 		var has int
 		s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('moderation_chat_configs') WHERE name=?`, col.name).Scan(&has)
@@ -1620,6 +1624,20 @@ func (s *Store) seedDefaultModerationRules() error {
 			}
 		}
 	}
+	var hardProfanityPackCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM moderation_rules WHERE notes LIKE 'minimal-ru-profanity-hard:%'`).Scan(&hardProfanityPackCount); err != nil {
+		return err
+	}
+	if hardProfanityPackCount == 0 {
+		for _, r := range []models.ModerationRule{
+			{Enabled: true, Language: "ru", Kind: "regex", Pattern: `(?i)\b(бля(?:д[ьи]|ть)?|сука|хуй|ху[её]\w*|пизд\w*|п[ие]здец|[её]б\w*|за[её]б\w*|у[её]б\w*|долбо[её]б\w*)\b`, Category: "profanity", Severity: "medium", Confidence: 0.90, Action: "mute", DurationSeconds: 300, Mode: "hard", Notes: "minimal-ru-profanity-hard:001"},
+			{Enabled: true, Language: "ru", Kind: "regex", Pattern: `(?i)\b(пош[её]л\s+нах|иди\s+нах|отсоси)\b`, Category: "profanity", Severity: "medium", Confidence: 0.90, Action: "mute", DurationSeconds: 300, Mode: "hard", Notes: "minimal-ru-profanity-hard:002"},
+		} {
+			if err := s.insertModerationSeedRule(r); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1639,10 +1657,12 @@ func (s *Store) GetModerationChatConfig(botID, chatID int64) (*models.Moderation
 	var c models.ModerationChatConfig
 	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes,
 			rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai,
+			new_member_mute_enabled, new_member_mute_seconds,
 			created_at, updated_at
 		FROM moderation_chat_configs WHERE bot_id=? AND chat_id=?`, botID, chatID).
 		Scan(&c.ID, &c.BotID, &c.ChatID, &c.Enabled, &c.AlertChatID, &c.SkipBotMessages, &c.IncludeContext, &c.ContextMessagesLimit, &c.ContextMinutes,
 			&c.RulesEnabled, &c.AILevel2Enabled, &c.AILevel2ProviderID, &c.AILevel2MinIntervalSeconds, &c.AILevel2ContextMinutes, &c.AILevel2LastRunAt, &c.LogCleanMessages, &c.MaxTextLengthForAI,
+			&c.NewMemberMuteEnabled, &c.NewMemberMuteSeconds,
 			&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -1656,17 +1676,20 @@ func (s *Store) SaveModerationChatConfig(c models.ModerationChatConfig) error {
 	normalizeModerationChatConfig(&c)
 	_, err := s.db.Exec(`INSERT INTO moderation_chat_configs
 		(bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes,
-		 rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai,
+		 new_member_mute_enabled, new_member_mute_seconds, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bot_id, chat_id) DO UPDATE SET
 			enabled=excluded.enabled, alert_chat_id=excluded.alert_chat_id, skip_bot_messages=excluded.skip_bot_messages,
 			include_context=excluded.include_context, context_messages_limit=excluded.context_messages_limit,
 			context_minutes=excluded.context_minutes, rules_enabled=excluded.rules_enabled, ai_level2_enabled=excluded.ai_level2_enabled,
 			ai_level2_provider_id=excluded.ai_level2_provider_id, ai_level2_min_interval_seconds=excluded.ai_level2_min_interval_seconds,
 			ai_level2_context_minutes=excluded.ai_level2_context_minutes, log_clean_messages=excluded.log_clean_messages,
-			max_text_length_for_ai=excluded.max_text_length_for_ai, updated_at=excluded.updated_at`,
+			max_text_length_for_ai=excluded.max_text_length_for_ai, new_member_mute_enabled=excluded.new_member_mute_enabled,
+			new_member_mute_seconds=excluded.new_member_mute_seconds, updated_at=excluded.updated_at`,
 		c.BotID, c.ChatID, c.Enabled, c.AlertChatID, c.SkipBotMessages, c.IncludeContext, c.ContextMessagesLimit, c.ContextMinutes,
-		c.RulesEnabled, c.AILevel2Enabled, c.AILevel2ProviderID, c.AILevel2MinIntervalSeconds, c.AILevel2ContextMinutes, c.AILevel2LastRunAt, c.LogCleanMessages, c.MaxTextLengthForAI, now, now)
+		c.RulesEnabled, c.AILevel2Enabled, c.AILevel2ProviderID, c.AILevel2MinIntervalSeconds, c.AILevel2ContextMinutes, c.AILevel2LastRunAt, c.LogCleanMessages, c.MaxTextLengthForAI,
+		c.NewMemberMuteEnabled, c.NewMemberMuteSeconds, now, now)
 	return err
 }
 
@@ -1691,6 +1714,9 @@ func normalizeModerationChatConfig(c *models.ModerationChatConfig) {
 	if c.MaxTextLengthForAI <= 0 {
 		c.MaxTextLengthForAI = 4000
 	}
+	c.AILevel2Enabled = false
+	c.AILevel2ProviderID = 0
+	c.NewMemberMuteSeconds = normalizeModerationMuteSeconds(c.NewMemberMuteSeconds)
 }
 
 func (s *Store) UpdateModerationAILevel2LastRun(botID, chatID int64, at string) error {
@@ -1770,9 +1796,25 @@ func normalizeModerationRule(r *models.ModerationRule) {
 	if r.Action == "" {
 		r.Action = "none"
 	}
+	if r.Action == "mute" {
+		r.DurationSeconds = normalizeModerationMuteSeconds(r.DurationSeconds)
+	}
 	if r.Mode == "" {
 		r.Mode = "soft"
 	}
+}
+
+func normalizeModerationMuteSeconds(seconds int64) int64 {
+	if seconds <= 0 {
+		return 300
+	}
+	if seconds < 300 {
+		return 300
+	}
+	if seconds > 3600 {
+		return 3600
+	}
+	return seconds
 }
 
 func (s *Store) ListModerationProviders(mask bool) ([]models.ModerationProvider, error) {

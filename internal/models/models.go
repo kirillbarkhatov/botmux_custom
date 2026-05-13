@@ -196,6 +196,8 @@ type ModerationChatConfig struct {
 	AILevel2LastRunAt          string `json:"ai_level2_last_run_at"`
 	LogCleanMessages           bool   `json:"log_clean_messages"`
 	MaxTextLengthForAI         int    `json:"max_text_length_for_ai"`
+	NewMemberMuteEnabled       bool   `json:"new_member_mute_enabled"`
+	NewMemberMuteSeconds       int64  `json:"new_member_mute_seconds"`
 	CreatedAt                  string `json:"created_at"`
 	UpdatedAt                  string `json:"updated_at"`
 }

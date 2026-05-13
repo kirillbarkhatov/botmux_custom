@@ -326,6 +326,7 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) {
 		pm.processForManagement(botID, rawUpdate)
 	}
 
+	pm.applyNewMemberMute(botID, rawUpdate)
 	pm.applyModeration(botID, rawUpdate)
 
 	// Proxy: forward to backend (skip if long poll enabled — backend pulls via queue)
@@ -347,9 +348,6 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) {
 
 	// Routing: check rules and forward to other bots
 	pm.applyRoutes(botID, rawUpdate)
-
-	// LLM-based routing
-	pm.applyLLMRoutes(botID, rawUpdate)
 
 	// Skip offset advancement for bridge-synthetic updates. Bridge uses
 	// time.Now().Unix() as seed (~1.7B+), while real Telegram update_ids are
@@ -662,6 +660,102 @@ func (pm *Manager) applyModeration(botID int64, rawUpdate map[string]any) {
 	pm.moderator.Process(context.Background(), msg, b)
 }
 
+func (pm *Manager) applyNewMemberMute(botID int64, rawUpdate map[string]any) {
+	rawMsg, _ := rawUpdate["message"].(map[string]any)
+	if rawMsg == nil {
+		return
+	}
+	members, _ := rawMsg["new_chat_members"].([]any)
+	if len(members) == 0 {
+		return
+	}
+	chat, _ := rawMsg["chat"].(map[string]any)
+	chatID := int64(number(chat["id"]))
+	messageID := int(number(rawMsg["message_id"]))
+	if chatID == 0 || messageID == 0 {
+		return
+	}
+	cfg, err := pm.store.GetModerationChatConfig(botID, chatID)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("[moderation] new member config load failed bot=%d chat=%d: %v", botID, chatID, err)
+		}
+		return
+	}
+	if !cfg.Enabled || !cfg.NewMemberMuteEnabled {
+		return
+	}
+	duration := moderation.NormalizeMuteDurationSeconds(cfg.NewMemberMuteSeconds)
+	pm.mu.Lock()
+	b := pm.managedBots[botID]
+	pm.mu.Unlock()
+	if b == nil {
+		log.Printf("[moderation] new member mute skipped: botID=%d has no managed bot", botID)
+		return
+	}
+	admins := map[int64]bool{}
+	if list, err := b.GetAdmins(chatID); err != nil {
+		log.Printf("[moderation] cannot check admins for new member mute chat=%d: %v", chatID, err)
+	} else {
+		for _, a := range list {
+			admins[a.UserID] = true
+		}
+	}
+	now := time.Now()
+	for i, rawMember := range members {
+		member, _ := rawMember.(map[string]any)
+		if member == nil {
+			continue
+		}
+		userID := int64(number(member["id"]))
+		if userID == 0 || userID == b.GetSelfID() {
+			continue
+		}
+		if isBot, _ := member["is_bot"].(bool); isBot {
+			continue
+		}
+		if admins[userID] {
+			continue
+		}
+		username := usernameFromRawUser(member)
+		until := now.Add(time.Duration(duration) * time.Second).Unix()
+		eventMsgID := messageID + i
+		event := models.ModerationEvent{
+			BotID: botID, ChatID: chatID, MessageID: eventMsgID, UserID: userID, Username: username,
+			MessageDate: int64(number(rawMsg["date"])) * 1000, Status: "action_taken", FinalToxic: true,
+			FinalSeverity: "medium", FinalCategory: "new_member", FinalConfidence: 1,
+			FinalReason: "new member mute enabled", FinalAction: "mute", ActionDurationSeconds: duration,
+			ActionResult: fmt.Sprintf("new member muted for %ds", duration), AlertChatID: cfg.AlertChatID,
+		}
+		eventID, created, err := pm.store.CreateModerationEvent(event)
+		if err != nil {
+			log.Printf("[moderation] create new member event failed: %v", err)
+			continue
+		}
+		event.ID = eventID
+		if !created {
+			continue
+		}
+		if err := b.MuteUser(chatID, userID, until); err != nil {
+			event.Status = "error"
+			event.ActionError = err.Error()
+			log.Printf("[moderation] new member mute failed chat=%d user=%d: %v", chatID, userID, err)
+		} else {
+			log.Printf("[moderation] new member muted chat=%d user=%d duration=%ds", chatID, userID, duration)
+		}
+		_ = pm.store.UpdateModerationEvent(event)
+	}
+}
+
+func usernameFromRawUser(user map[string]any) string {
+	if u, _ := user["username"].(string); u != "" {
+		return "@" + u
+	}
+	first, _ := user["first_name"].(string)
+	last, _ := user["last_name"].(string)
+	return strings.TrimSpace(first + " " + last)
+}
+
 func extractModerationMessage(botID int64, rawUpdate map[string]any) (moderation.Message, bool) {
 	rawMsg, _ := rawUpdate["message"].(map[string]any)
 	if rawMsg == nil {
@@ -741,9 +835,7 @@ func (pm *Manager) processForManagement(botID int64, rawUpdate map[string]any) {
 
 // applyLLMRoutes uses LLM to decide routing for an incoming update
 func (pm *Manager) applyLLMRoutes(botID int64, rawUpdate map[string]any) {
-	if pm.llmRouter == nil {
-		return
-	}
+	return
 
 	msg, _ := rawUpdate["message"].(map[string]any)
 	if msg == nil {
