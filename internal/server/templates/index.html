@@ -1782,16 +1782,6 @@ body::before { display: none; }
         <div class="mod-card">
           <div class="mod-card-head">
             <div>
-              <div class="mod-card-title" data-i18n="moderation_levels">Levels for this chat</div>
-              <div class="mod-card-subtitle" data-i18n="moderation_levels_hint">Tune provider, confidence, trigger severity, and action per level.</div>
-            </div>
-          </div>
-          <div id="modLevels" class="mod-list"></div>
-        </div>
-
-        <div class="mod-card">
-          <div class="mod-card-head">
-            <div>
               <div class="mod-card-title" data-i18n="moderation_test">Test classification</div>
               <div class="mod-card-subtitle" data-i18n="moderation_test_hint">Run a full dry-run classification without applying actions.</div>
             </div>
@@ -1811,18 +1801,10 @@ body::before { display: none; }
               <div class="mod-card-title" data-i18n="moderation_log">Moderation log</div>
               <div class="mod-card-subtitle" id="modEventsSummary"></div>
             </div>
+            <button class="btn btn-primary btn-sm" onclick="openModerationEventsModal()" data-i18n="moderation_open_log">Open log</button>
           </div>
           <div class="mod-dashboard" id="modEventStats"></div>
-          <div class="mod-toolbar" style="margin-top:12px">
-            <input id="modFilterUser" type="number" placeholder="user id">
-            <select id="modFilterSeverity"><option value="">severity</option><option>low</option><option>medium</option><option>high</option></select>
-            <select id="modFilterAction"><option value="">action</option><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
-            <select id="modFilterStatus"><option value="">status</option><option>ok</option><option>flagged</option><option>action_taken</option><option>error</option><option>skipped</option></select>
-            <input id="modFilterDateFrom" type="date">
-            <input id="modFilterDateTo" type="date">
-            <button class="btn btn-sm" onclick="loadModerationEvents()">FILTER</button>
-          </div>
-          <div id="modEvents" class="mod-list"></div>
+          <div class="hint" style="margin-top:12px" data-i18n="moderation_log_modal_hint">Open the log to filter, page through events, and inspect details.</div>
         </div>
       </div>
     </div>
@@ -3863,8 +3845,9 @@ let modExpandedRuleCategories = {};
 let modAlertChatsLen = 0;
 let modConfigCache = null;
 let modAlertChatsCache = [];
-let modLevelsCache = [];
 let modEventsCache = [];
+let modEventsOffset = 0;
+const modEventsLimit = 50;
 
 function modBadge(text, cls = '') {
   return `<span class="badge ${cls}">${esc(text)}</span>`;
@@ -3938,7 +3921,7 @@ async function loadModeration() {
   if (!currentBotID || !currentChat) return;
   await Promise.all([loadModerationConfig(), loadModProviders()]);
   fillAI2ProviderOptions();
-  await Promise.all([loadModerationRules(), loadModerationLevels(), loadModerationEvents()]);
+  await Promise.all([loadModerationRules(), loadModerationEvents()]);
   renderModerationOverview();
 }
 
@@ -4099,7 +4082,7 @@ async function saveModProvider() {
   const body = modProviderBody();
   await api(body.id ? '/api/moderation/providers/update' : '/api/moderation/providers/add', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   closeModProviderModal();
-  await loadModProviders(); fillAI2ProviderOptions(); await loadModerationLevels();
+  await loadModProviders(); fillAI2ProviderOptions();
   toast(t('saved'));
 }
 
@@ -4186,7 +4169,14 @@ function filteredModerationRules() {
 function renderModerationRules() {
   const filtered = filteredModerationRules();
   document.getElementById('modRulesSummary').textContent = `${filtered.length} / ${modRulesCache.length} rules`;
-  document.getElementById('modRules').innerHTML = filtered.length ? filtered.map(r => renderModRuleCard(r)).join('') : `<div class="mod-empty"><div class="mod-empty-title">${t('moderation_empty_rules_title')}</div><div>${t('moderation_empty_rules_text')}</div><button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="showModRuleForm()">${t('moderation_new_rule')}</button></div>`;
+  const byCat = new Map();
+  filtered.forEach(r => {
+    const label = modRuleCategoryLabel(r);
+    if (!byCat.has(label)) byCat.set(label, []);
+    byCat.get(label).push(r);
+  });
+  modRuleGroupsCache = [...byCat.entries()].map(([label, rules]) => ({label, rules})).sort((a, b) => a.label.localeCompare(b.label));
+  document.getElementById('modRules').innerHTML = modRuleGroupsCache.length ? modRuleGroupsCache.map((g, idx) => renderModRuleCategory(g, idx)).join('') : `<div class="mod-empty"><div class="mod-empty-title">${t('moderation_empty_rules_title')}</div><div>${t('moderation_empty_rules_text')}</div><button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="showModRuleForm()">${t('moderation_new_rule')}</button></div>`;
   renderModerationOverview();
 }
 
@@ -4230,19 +4220,19 @@ function renderModRuleCategory(group, idx) {
   const modes = [...new Set(group.rules.map(r => r.mode || 'soft'))].join(', ');
   const actions = [...new Set(group.rules.map(r => r.action || 'none'))].join(', ');
   const open = !!modExpandedRuleCategories[group.label];
-  return `<div class="route-item" style="display:block;margin-bottom:10px">
-    <div class="route-header">
+  return `<div class="mod-item" style="display:block">
+    <div class="mod-item-main">
       <div>
         <button class="btn btn-sm" onclick="toggleModRuleCategory(${idx})">${open ? '−' : '+'}</button>
-        <b>${esc(group.label)}</b>
-        <span class="badge">${group.rules.length}</span>
-        <span class="badge">${enabled} enabled</span>
-        <span class="badge">global ${global}</span>
+        <span class="mod-item-title">${esc(group.label)}</span>
+        ${modBadge(String(group.rules.length))}
+        ${modBadge(`${enabled} enabled`, enabled ? 'clean' : 'status-skipped')}
+        ${modBadge(`global ${global}`)}
         ${chat ? `<span class="badge">chat ${chat}</span>` : ''}
-        <div class="hint">severity: ${esc(severities)} · mode: ${esc(modes)} · action: ${esc(actions)}</div>
+        <div class="mod-item-note">severity: ${esc(severities)} · mode: ${esc(modes)} · action: ${esc(actions)}</div>
       </div>
     </div>
-    <div class="tag-form" style="margin-top:8px">
+    <div class="mod-toolbar" style="margin-top:10px;margin-bottom:0">
       <select id="modCatEnabled${idx}"><option value="">enabled: keep</option><option value="true">enable</option><option value="false">disable</option></select>
       <select id="modCatSeverity${idx}"><option value="">severity: keep</option><option>none</option><option>low</option><option>medium</option><option>high</option></select>
       <input id="modCatConfidence${idx}" type="number" min="0" max="1" step="0.01" placeholder="confidence">
@@ -4256,13 +4246,7 @@ function renderModRuleCategory(group, idx) {
 }
 
 function renderModRuleRows(rows) {
-  return `<div class="route-table" style="overflow:auto;max-height:420px;margin-top:10px"><table style="width:100%;font-size:12px;table-layout:fixed">
-    <thead><tr><th>scope</th><th>enabled</th><th>language</th><th>kind</th><th>pattern</th><th>category</th><th>severity</th><th>confidence</th><th>mode</th><th>action</th><th>duration</th><th></th></tr></thead>
-    <tbody>${rows.map(r => `<tr title="${esc(r.notes || '')}">
-      <td>${r.bot_id === 0 && r.chat_id === 0 ? 'global' : 'chat'}</td><td>${r.enabled ? 'yes' : 'no'}</td><td>${esc(r.language)}</td><td>${esc(r.kind)}</td>
-      <td style="word-break:break-all">${esc(r.pattern)}</td><td>${esc(r.category)}</td><td>${esc(r.severity)}</td><td>${Number(r.confidence || 0).toFixed(2)}</td><td>${esc(r.mode)}</td><td>${esc(r.action)}</td><td>${r.duration_seconds || 0}</td>
-      <td><button class="btn btn-sm" onclick="editModRule(${r.id})">${t('edit')}</button> <button class="btn btn-danger btn-sm" onclick="deleteModRule(${r.id})">${t('del')}</button></td>
-    </tr>`).join('')}</tbody></table></div>`;
+  return `<div class="mod-list" style="margin-top:10px">${rows.map(r => renderModRuleCard(r)).join('')}</div>`;
 }
 
 function toggleModRuleCategory(idx) {
@@ -4411,77 +4395,6 @@ function renderRuleTestResult(res) {
   </div>`;
 }
 
-async function loadModerationLevels() {
-  modLevelsCache = await api(`/api/moderation/levels?bot_id=${currentBotID}&chat_id=${currentChat.id}`);
-  renderModerationLevels();
-}
-
-function renderModerationLevels() {
-  document.getElementById('modLevels').innerHTML = (modLevelsCache || []).map(l => `
-    <div class="mod-item">
-      <div class="mod-item-main">
-        <div>
-          <div class="mod-item-title">Level ${l.level}: ${esc(l.name || '')}</div>
-          <div class="mod-meta" style="margin-top:6px">${modBadge(l.enabled ? 'enabled' : 'disabled', l.enabled ? 'clean' : 'status-skipped')}${modBadge(modProviderName(l.provider_id))}${modBadge(l.trigger_severity || 'medium', l.trigger_severity || 'medium')}${modBadge(l.action || 'alert', l.action || 'alert')}${l.required ? modBadge('required') : ''}${l.only_if_uncertain ? modBadge('only if uncertain') : ''}</div>
-          <div class="mod-item-note">min confidence ${Number(l.min_confidence || 0).toFixed(2)} · duration ${l.duration_seconds || 0}s</div>
-        </div>
-        <button class="btn btn-sm" onclick="editModLevel(${l.level})">${t('edit')}</button>
-      </div>
-    </div>`).join('') || `<div class="mod-empty"><div class="mod-empty-title">${t('moderation_empty_levels_title')}</div><div>${t('moderation_empty_levels_text')}</div></div>`;
-}
-
-function fillModLevelProviderOptions() {
-  const sel = document.getElementById('modLevelProvider');
-  sel.innerHTML = `<option value="0">${t('select_provider')}</option>` + modProvidersCache.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.model || p.kind)})</option>`).join('');
-}
-
-function editModLevel(levelNo) {
-  const l = modLevelsCache.find(x => Number(x.level) === Number(levelNo));
-  if (!l) return;
-  fillModLevelProviderOptions();
-  document.getElementById('modLevelAvatar').textContent = `L${l.level}`;
-  document.getElementById('modLevelModalTitle').textContent = `Level ${l.level}: ${l.name || ''}`;
-  document.getElementById('modLevelID').value = l.id || 0;
-  document.getElementById('modLevelNumber').value = l.level || 1;
-  document.getElementById('modLevelName').value = l.name || '';
-  document.getElementById('modLevelEnabled').checked = !!l.enabled;
-  document.getElementById('modLevelProvider').value = String(l.provider_id || 0);
-  document.getElementById('modLevelConfidence').value = l.min_confidence || 0.7;
-  document.getElementById('modLevelSeverity').value = l.trigger_severity || 'medium';
-  document.getElementById('modLevelAction').value = l.action || 'alert';
-  document.getElementById('modLevelDuration').value = l.duration_seconds || 0;
-  document.getElementById('modLevelRequired').checked = !!l.required;
-  document.getElementById('modLevelUncertain').checked = !!l.only_if_uncertain;
-  document.getElementById('modLevelModal').style.display = 'flex';
-}
-
-function closeModLevelModal() {
-  document.getElementById('modLevelModal').style.display = 'none';
-}
-
-async function saveModLevel() {
-  const existing = modLevelsCache.find(x => Number(x.level) === Number(document.getElementById('modLevelNumber').value)) || {};
-  const body = {
-    ...existing,
-    bot_id: currentBotID,
-    chat_id: currentChat.id,
-    level: parseInt(document.getElementById('modLevelNumber').value || '1'),
-    name: document.getElementById('modLevelName').value,
-    enabled: document.getElementById('modLevelEnabled').checked,
-    provider_id: parseInt(document.getElementById('modLevelProvider').value || '0'),
-    min_confidence: parseFloat(document.getElementById('modLevelConfidence').value || '0.7'),
-    trigger_severity: document.getElementById('modLevelSeverity').value,
-    action: document.getElementById('modLevelAction').value,
-    duration_seconds: parseInt(document.getElementById('modLevelDuration').value || '0'),
-    required: document.getElementById('modLevelRequired').checked,
-    only_if_uncertain: document.getElementById('modLevelUncertain').checked
-  };
-  await api('/api/moderation/levels/update', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  closeModLevelModal();
-  await loadModerationLevels();
-  toast(t('saved'));
-}
-
 async function runModerationClassifyTest() {
   const body = {
     bot_id: currentBotID,
@@ -4512,22 +4425,53 @@ async function loadModerationEvents() {
   const st = document.getElementById('modFilterStatus')?.value || '';
   const df = document.getElementById('modFilterDateFrom')?.value || '';
   const dt = document.getElementById('modFilterDateTo')?.value || '';
-  const events = await api(`/api/moderation/events?bot_id=${currentBotID}&chat_id=${currentChat.id}&user_id=${encodeURIComponent(user)}&severity=${encodeURIComponent(sev)}&action=${encodeURIComponent(act)}&status=${encodeURIComponent(st)}&date_from=${encodeURIComponent(df)}&date_to=${encodeURIComponent(dt ? dt + 'T23:59:59' : '')}&limit=50`);
+  const events = await api(`/api/moderation/events?bot_id=${currentBotID}&chat_id=${currentChat.id}&user_id=${encodeURIComponent(user)}&severity=${encodeURIComponent(sev)}&action=${encodeURIComponent(act)}&status=${encodeURIComponent(st)}&date_from=${encodeURIComponent(df)}&date_to=${encodeURIComponent(dt ? dt + 'T23:59:59' : '')}&limit=${modEventsLimit}&offset=${modEventsOffset}`);
   modEventsCache = events || [];
   renderModerationEvents();
   renderModerationOverview();
 }
 
+function openModerationEventsModal() {
+  document.getElementById('modEventsModal').style.display = 'flex';
+  renderModerationEvents();
+}
+
+function closeModerationEventsModal() {
+  document.getElementById('modEventsModal').style.display = 'none';
+}
+
+function resetModerationEventPaging() {
+  modEventsOffset = 0;
+  loadModerationEvents();
+}
+
+function pageModerationEvents(delta) {
+  modEventsOffset = Math.max(0, modEventsOffset + delta * modEventsLimit);
+  loadModerationEvents();
+}
+
 function renderModerationEvents() {
   const counts = {action_taken:0, flagged:0, ok:0, error:0};
   modEventsCache.forEach(e => { if (counts[e.status] !== undefined) counts[e.status]++; });
-  document.getElementById('modEventsSummary').textContent = `${modEventsCache.length} ${t('moderation_events_loaded')}`;
-  document.getElementById('modEventStats').innerHTML = `
+  document.getElementById('modEventsSummary').textContent = `${modEventsCache.length} ${t('moderation_events_loaded')} · ${t('moderation_page_offset')} ${modEventsOffset}`;
+  const statsHTML = `
     <div class="stat-card"><div class="stat-value">${modEventsCache.length}</div><div class="stat-label">total</div></div>
     <div class="stat-card"><div class="stat-value">${counts.action_taken}</div><div class="stat-label">action_taken</div></div>
     <div class="stat-card"><div class="stat-value">${counts.flagged}</div><div class="stat-label">flagged</div></div>
     <div class="stat-card"><div class="stat-value">${counts.error}</div><div class="stat-label">error</div></div>`;
-  document.getElementById('modEvents').innerHTML = modEventsCache.map(e => `
+  document.getElementById('modEventStats').innerHTML = statsHTML;
+  const modalStats = document.getElementById('modEventStatsModal');
+  if (modalStats) modalStats.innerHTML = statsHTML;
+  const modalSubtitle = document.getElementById('modEventsModalSubtitle');
+  if (modalSubtitle) modalSubtitle.textContent = `${modEventsCache.length} ${t('moderation_events_loaded')} · ${t('moderation_page_offset')} ${modEventsOffset}`;
+  const pager = document.getElementById('modEventsPager');
+  if (pager) pager.innerHTML = `
+    <button class="btn btn-sm" onclick="pageModerationEvents(-1)" ${modEventsOffset <= 0 ? 'disabled' : ''}>${t('moderation_prev')}</button>
+    <span class="hint">${t('moderation_page_offset')} ${modEventsOffset}</span>
+    <button class="btn btn-sm" onclick="pageModerationEvents(1)" ${modEventsCache.length < modEventsLimit ? 'disabled' : ''}>${t('moderation_next')}</button>`;
+  const list = document.getElementById('modEvents');
+  if (!list) return;
+  list.innerHTML = modEventsCache.map(e => `
     <div class="mod-item" onclick="if(!event.target.closest('button'))loadModEventDetail(${e.id})">
       <div class="mod-item-main">
         <div>
@@ -5584,47 +5528,43 @@ function clearLogsView() {
   </div>
 </div>
 
-<!-- Moderation Level Modal -->
-<div id="modLevelModal" class="modal-overlay mod-modal" style="display:none" onclick="if(event.target===this)closeModLevelModal()">
-  <div class="modal">
-    <div class="profile-header">
-      <div class="profile-avatar" id="modLevelAvatar">L</div>
-      <div class="profile-identity">
-        <div class="profile-name" id="modLevelModalTitle">Level</div>
-        <div class="profile-id" data-i18n="moderation_levels_hint">Tune provider, confidence, trigger severity, and action per level.</div>
-      </div>
-    </div>
-    <input type="hidden" id="modLevelID"><input type="hidden" id="modLevelNumber">
-    <div class="profile-section">
-      <div class="profile-section-title" data-i18n="moderation_level_settings">Level settings</div>
-      <div class="mod-form-grid">
-        <div class="mod-field"><label>Name</label><input id="modLevelName"></div>
-        <label class="modal-perm"><input type="checkbox" id="modLevelEnabled"> Enabled</label>
-        <div class="mod-field"><label data-i18n="select_provider">Provider</label><select id="modLevelProvider"></select></div>
-        <div class="mod-field"><label>Min confidence</label><input id="modLevelConfidence" type="number" min="0" max="1" step="0.01"></div>
-        <div class="mod-field"><label>Trigger severity</label><select id="modLevelSeverity"><option>none</option><option>low</option><option>medium</option><option>high</option></select></div>
-        <div class="mod-field"><label>Action</label><select id="modLevelAction"><option>none</option><option>alert</option><option>mute</option><option>ban</option></select></div>
-        <div class="mod-field"><label>Duration</label><input id="modLevelDuration" type="number" min="0"></div>
-        <label class="modal-perm"><input type="checkbox" id="modLevelRequired"> Required</label>
-        <label class="modal-perm"><input type="checkbox" id="modLevelUncertain"> Only if uncertain</label>
-      </div>
-    </div>
-    <div class="mod-modal-footer">
-      <span></span>
-      <div class="mod-modal-footer-right">
-        <button class="btn" onclick="closeModLevelModal()" data-i18n="cancel">Cancel</button>
-        <button class="btn btn-primary" onclick="saveModLevel()" data-i18n="save">SAVE</button>
-      </div>
-    </div>
-  </div>
-</div>
-
 <!-- Moderation Logic Modal -->
 <div id="modLogicModal" class="modal-overlay mod-modal mod-modal-wide" style="display:none" onclick="if(event.target===this)closeModerationLogicModal()">
   <div class="modal">
     <h3 data-i18n="moderation_logic">Logic</h3>
     <div id="modLogicContent" style="margin-top:16px"></div>
     <div style="text-align:right;margin-top:16px"><button class="btn" onclick="closeModerationLogicModal()" data-i18n="close">CLOSE</button></div>
+  </div>
+</div>
+
+<!-- Moderation Events Modal -->
+<div id="modEventsModal" class="modal-overlay mod-modal mod-modal-wide" style="display:none" onclick="if(event.target===this)closeModerationEventsModal()">
+  <div class="modal">
+    <div class="profile-header">
+      <div class="profile-avatar">LOG</div>
+      <div class="profile-identity">
+        <div class="profile-name" data-i18n="moderation_log">Moderation log</div>
+        <div class="profile-id" id="modEventsModalSubtitle"></div>
+      </div>
+    </div>
+    <div class="mod-dashboard" id="modEventStatsModal"></div>
+    <div class="mod-toolbar" style="margin-top:12px">
+      <input id="modFilterUser" type="number" placeholder="user id">
+      <select id="modFilterSeverity"><option value="">severity</option><option>low</option><option>medium</option><option>high</option></select>
+      <select id="modFilterAction"><option value="">action</option><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
+      <select id="modFilterStatus"><option value="">status</option><option>ok</option><option>flagged</option><option>action_taken</option><option>error</option><option>skipped</option></select>
+      <input id="modFilterDateFrom" type="date">
+      <input id="modFilterDateTo" type="date">
+      <button class="btn btn-sm" onclick="resetModerationEventPaging()">FILTER</button>
+    </div>
+    <div id="modEventsPager" class="mod-card-actions" style="justify-content:flex-end;margin:10px 0"></div>
+    <div id="modEvents" class="mod-list"></div>
+    <div class="mod-modal-footer">
+      <span></span>
+      <div class="mod-modal-footer-right">
+        <button class="btn" onclick="closeModerationEventsModal()" data-i18n="close">CLOSE</button>
+      </div>
+    </div>
   </div>
 </div>
 
