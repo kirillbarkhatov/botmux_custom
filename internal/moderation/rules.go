@@ -136,14 +136,41 @@ func matchRule(original, normalized string, rule models.ModerationRule) (bool, s
 	case "phrase":
 		return strings.Contains(normalized, NormalizeText(pattern)), ""
 	case "regex":
-		re, err := regexp.Compile(pattern)
+		matched, err := matchRegexPattern(pattern, original, normalized)
 		if err != nil {
 			return false, err.Error()
 		}
-		return re.MatchString(original) || re.MatchString(normalized), ""
+		return matched, ""
 	default:
 		return false, ""
 	}
+}
+
+func matchRegexPattern(pattern, original, normalized string) (bool, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, err
+	}
+	if re.MatchString(original) || re.MatchString(normalized) {
+		return true, nil
+	}
+	if !strings.Contains(pattern, `\b`) && !strings.Contains(pattern, `\w`) {
+		return false, nil
+	}
+	unicodePattern := unicodeWordRegexPattern(pattern)
+	if unicodePattern == pattern {
+		return false, nil
+	}
+	re, err = regexp.Compile(unicodePattern)
+	if err != nil {
+		return false, err
+	}
+	return re.MatchString(original) || re.MatchString(normalized), nil
+}
+
+func unicodeWordRegexPattern(pattern string) string {
+	pattern = strings.ReplaceAll(pattern, `\w`, `[\p{L}\p{N}_]`)
+	return strings.ReplaceAll(pattern, `\b`, `(?:^|$|[^\p{L}\p{N}_])`)
 }
 
 func keywordMatch(text, word string) bool {
