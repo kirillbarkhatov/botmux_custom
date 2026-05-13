@@ -1653,6 +1653,20 @@ body::before { display: none; }
       </div>
       <div class="panel" style="margin-top:16px">
         <div class="route-header"><div class="panel-title" data-i18n="moderation_rules">Rules</div><button class="btn btn-primary btn-sm" onclick="showModRuleForm()" data-i18n="add">ADD</button></div>
+        <div class="tag-form" style="margin-bottom:10px">
+          <input id="modRuleSearch" placeholder="pattern / notes" oninput="modRulesPage=1;renderModerationRules()">
+          <select id="modRuleFilterScope" onchange="modRulesPage=1;renderModerationRules()"><option value="">scope</option><option value="global">global</option><option value="chat">chat</option></select>
+          <select id="modRuleFilterEnabled" onchange="modRulesPage=1;renderModerationRules()"><option value="">enabled</option><option value="true">enabled</option><option value="false">disabled</option></select>
+          <select id="modRuleFilterCategory" onchange="modRulesPage=1;renderModerationRules()"><option value="">category</option></select>
+          <select id="modRuleFilterSeverity" onchange="modRulesPage=1;renderModerationRules()"><option value="">severity</option><option>none</option><option>low</option><option>medium</option><option>high</option></select>
+          <select id="modRuleFilterMode" onchange="modRulesPage=1;renderModerationRules()"><option value="">mode</option><option>allow</option><option>soft</option><option>hard</option></select>
+          <select id="modRuleFilterSource" onchange="modRulesPage=1;renderModerationRules()"><option value="">source category</option></select>
+          <select id="modRulePageSize" onchange="modRulesPage=1;renderModerationRules()"><option>25</option><option selected>50</option><option>100</option><option>200</option></select>
+        </div>
+        <div class="route-header" style="margin-bottom:8px">
+          <div class="hint" id="modRulesSummary"></div>
+          <div><button class="btn btn-sm" onclick="changeModRulesPage(-1)">‹</button> <span id="modRulesPageInfo" class="hint"></span> <button class="btn btn-sm" onclick="changeModRulesPage(1)">›</button></div>
+        </div>
         <div id="modRules"></div>
         <div id="modRuleForm" style="display:none;margin-top:12px" class="modal-field">
           <input type="hidden" id="modRuleID">
@@ -3724,6 +3738,7 @@ async function removeChat() {
 
 let modProvidersCache = [];
 let modRulesCache = [];
+let modRulesPage = 1;
 let modAlertChatsLen = 0;
 
 async function loadModeration() {
@@ -3862,13 +3877,74 @@ function fillAI2ProviderOptions() {
 
 async function loadModerationRules() {
   modRulesCache = await api(`/api/moderation/rules?bot_id=${currentBotID}&chat_id=${currentChat.id}&include_global=true`);
-  document.getElementById('modRules').innerHTML = `<div class="route-table" style="overflow:auto"><table style="width:100%;font-size:12px">
+  fillModRuleFilterOptions();
+  modRulesPage = 1;
+  renderModerationRules();
+}
+
+function fillModRuleFilterOptions() {
+  const cats = [...new Set(modRulesCache.map(r => r.category).filter(Boolean))].sort();
+  const srcCats = [...new Set(modRulesCache.map(r => modRuleSourceCategory(r)).filter(Boolean))].sort();
+  const catSel = document.getElementById('modRuleFilterCategory');
+  const srcSel = document.getElementById('modRuleFilterSource');
+  const catVal = catSel.value;
+  const srcVal = srcSel.value;
+  catSel.innerHTML = '<option value="">category</option>' + cats.map(c => `<option>${esc(c)}</option>`).join('');
+  srcSel.innerHTML = '<option value="">source category</option>' + srcCats.map(c => `<option>${esc(c)}</option>`).join('');
+  catSel.value = catVal;
+  srcSel.value = srcVal;
+}
+
+function modRuleSourceCategory(r) {
+  const m = String(r.notes || '').match(/source_category=([^;]+)/);
+  return m ? m[1] : '';
+}
+
+function filteredModerationRules() {
+  const q = (document.getElementById('modRuleSearch')?.value || '').toLowerCase().trim();
+  const scope = document.getElementById('modRuleFilterScope')?.value || '';
+  const enabled = document.getElementById('modRuleFilterEnabled')?.value || '';
+  const category = document.getElementById('modRuleFilterCategory')?.value || '';
+  const severity = document.getElementById('modRuleFilterSeverity')?.value || '';
+  const mode = document.getElementById('modRuleFilterMode')?.value || '';
+  const source = document.getElementById('modRuleFilterSource')?.value || '';
+  return modRulesCache.filter(r => {
+    const rScope = r.bot_id === 0 && r.chat_id === 0 ? 'global' : 'chat';
+    if (scope && rScope !== scope) return false;
+    if (enabled && String(!!r.enabled) !== enabled) return false;
+    if (category && r.category !== category) return false;
+    if (severity && r.severity !== severity) return false;
+    if (mode && r.mode !== mode) return false;
+    if (source && modRuleSourceCategory(r) !== source) return false;
+    if (q) {
+      const hay = `${r.pattern || ''} ${r.notes || ''} ${r.kind || ''} ${r.category || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderModerationRules() {
+  const filtered = filteredModerationRules();
+  const pageSize = parseInt(document.getElementById('modRulePageSize')?.value || '50');
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  modRulesPage = Math.min(Math.max(1, modRulesPage), pages);
+  const start = (modRulesPage - 1) * pageSize;
+  const rows = filtered.slice(start, start + pageSize);
+  document.getElementById('modRulesSummary').textContent = `${filtered.length} / ${modRulesCache.length} rules`;
+  document.getElementById('modRulesPageInfo').textContent = `${modRulesPage} / ${pages}`;
+  document.getElementById('modRules').innerHTML = rows.length ? `<div class="route-table" style="overflow:auto;max-height:560px"><table style="width:100%;font-size:12px;table-layout:fixed">
     <thead><tr><th>scope</th><th>enabled</th><th>language</th><th>kind</th><th>pattern</th><th>category</th><th>severity</th><th>confidence</th><th>mode</th><th>action</th><th>duration</th><th></th></tr></thead>
-    <tbody>${modRulesCache.map(r => `<tr>
+    <tbody>${rows.map(r => `<tr title="${esc(r.notes || '')}">
       <td>${r.bot_id === 0 && r.chat_id === 0 ? 'global' : 'chat'}</td><td>${r.enabled ? 'yes' : 'no'}</td><td>${esc(r.language)}</td><td>${esc(r.kind)}</td>
-      <td>${esc(r.pattern)}</td><td>${esc(r.category)}</td><td>${esc(r.severity)}</td><td>${Number(r.confidence || 0).toFixed(2)}</td><td>${esc(r.mode)}</td><td>${esc(r.action)}</td><td>${r.duration_seconds || 0}</td>
+      <td style="word-break:break-all">${esc(r.pattern)}</td><td>${esc(r.category)}</td><td>${esc(r.severity)}</td><td>${Number(r.confidence || 0).toFixed(2)}</td><td>${esc(r.mode)}</td><td>${esc(r.action)}</td><td>${r.duration_seconds || 0}</td>
       <td><button class="btn btn-sm" onclick="editModRule(${r.id})">${t('edit')}</button> <button class="btn btn-danger btn-sm" onclick="deleteModRule(${r.id})">${t('del')}</button></td>
-    </tr>`).join('')}</tbody></table></div>` || `<div class="hint">${t('no_data')}</div>`;
+    </tr>`).join('')}</tbody></table></div>` : `<div class="hint">${t('no_data')}</div>`;
+}
+
+function changeModRulesPage(delta) {
+  modRulesPage += delta;
+  renderModerationRules();
 }
 
 function showModRuleForm() {

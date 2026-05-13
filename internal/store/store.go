@@ -1578,35 +1578,50 @@ func (s *Store) seedDefaultModerationRules() error {
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM moderation_rules`).Scan(&count); err != nil {
 		return err
 	}
-	if count > 0 {
-		return nil
-	}
-	now := time.Now().Format(time.RFC3339)
-	rules := []models.ModerationRule{
-		{Kind: "phrase", Pattern: "t.me/joinchat", Category: "spam", Severity: "medium", Confidence: 0.85, Mode: "soft", Notes: "Telegram invite spam marker"},
-		{Kind: "phrase", Pattern: "crypto giveaway", Category: "spam", Severity: "medium", Confidence: 0.85, Mode: "soft"},
-		{Kind: "phrase", Pattern: "free money", Category: "spam", Severity: "low", Confidence: 0.75, Mode: "soft"},
-		{Kind: "keyword", Pattern: "casino", Category: "spam", Severity: "low", Confidence: 0.75, Mode: "soft"},
-		{Kind: "regex", Pattern: `(?i)\b(airdrop|giveaway)\b.*\b(wallet|crypto|usdt|btc)\b`, Category: "spam", Severity: "medium", Confidence: 0.80, Mode: "soft"},
-		{Kind: "phrase", Pattern: "i will kill you", Category: "threat", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
-		{Kind: "phrase", Pattern: "kill yourself", Category: "harassment", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
-		{Kind: "phrase", Pattern: "я тебя убью", Language: "ru", Category: "threat", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
-		{Kind: "phrase", Pattern: "убей себя", Language: "ru", Category: "harassment", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
-		{Kind: "phrase", Pattern: "you are worthless", Category: "harassment", Severity: "medium", Confidence: 0.80, Mode: "soft"},
-		{Kind: "phrase", Pattern: "никчемный человек", Language: "ru", Category: "harassment", Severity: "medium", Confidence: 0.80, Mode: "soft"},
-	}
-	for _, r := range rules {
-		normalizeModerationRule(&r)
-		if r.Language == "" {
-			r.Language = "any"
+	if count == 0 {
+		rules := []models.ModerationRule{
+			{Enabled: true, Kind: "phrase", Pattern: "t.me/joinchat", Category: "spam", Severity: "medium", Confidence: 0.85, Mode: "soft", Notes: "Telegram invite spam marker"},
+			{Enabled: true, Kind: "phrase", Pattern: "crypto giveaway", Category: "spam", Severity: "medium", Confidence: 0.85, Mode: "soft"},
+			{Enabled: true, Kind: "phrase", Pattern: "free money", Category: "spam", Severity: "low", Confidence: 0.75, Mode: "soft"},
+			{Enabled: true, Kind: "keyword", Pattern: "casino", Category: "spam", Severity: "low", Confidence: 0.75, Mode: "soft"},
+			{Enabled: true, Kind: "regex", Pattern: `(?i)\b(airdrop|giveaway)\b.*\b(wallet|crypto|usdt|btc)\b`, Category: "spam", Severity: "medium", Confidence: 0.80, Mode: "soft"},
+			{Enabled: true, Kind: "phrase", Pattern: "i will kill you", Category: "threat", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+			{Enabled: true, Kind: "phrase", Pattern: "kill yourself", Category: "harassment", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+			{Enabled: true, Kind: "phrase", Pattern: "я тебя убью", Language: "ru", Category: "threat", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+			{Enabled: true, Kind: "phrase", Pattern: "убей себя", Language: "ru", Category: "harassment", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+			{Enabled: true, Kind: "phrase", Pattern: "you are worthless", Category: "harassment", Severity: "medium", Confidence: 0.80, Mode: "soft"},
+			{Enabled: true, Kind: "phrase", Pattern: "никчемный человек", Language: "ru", Category: "harassment", Severity: "medium", Confidence: 0.80, Mode: "soft"},
 		}
-		if _, err := s.db.Exec(`INSERT INTO moderation_rules (bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at)
-			VALUES (0, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.Language, r.Kind, r.Pattern, r.Category, r.Severity, r.Confidence, r.Action, r.DurationSeconds, r.Mode, r.Notes, now, now); err != nil {
-			return err
+		for _, r := range rules {
+			if err := s.insertModerationSeedRule(r); err != nil {
+				return err
+			}
+		}
+	}
+	var ruPackCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM moderation_rules WHERE notes LIKE 'ru-trigger-pack:%'`).Scan(&ruPackCount); err != nil {
+		return err
+	}
+	if ruPackCount == 0 {
+		for _, r := range moderationRUTriggerPatternRules {
+			if err := s.insertModerationSeedRule(r); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (s *Store) insertModerationSeedRule(r models.ModerationRule) error {
+	now := time.Now().Format(time.RFC3339)
+	normalizeModerationRule(&r)
+	if r.Language == "" {
+		r.Language = "any"
+	}
+	_, err := s.db.Exec(`INSERT INTO moderation_rules (bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.BotID, r.ChatID, r.Enabled, r.Language, r.Kind, r.Pattern, r.Category, r.Severity, r.Confidence, r.Action, r.DurationSeconds, r.Mode, r.Notes, now, now)
+	return err
 }
 
 func (s *Store) GetModerationChatConfig(botID, chatID int64) (*models.ModerationChatConfig, error) {
@@ -1713,7 +1728,6 @@ func (s *Store) SaveModerationRule(r models.ModerationRule) error {
 	now := time.Now().Format(time.RFC3339)
 	normalizeModerationRule(&r)
 	if r.ID == 0 {
-		r.Enabled = true
 		_, err := s.db.Exec(`INSERT INTO moderation_rules (bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.BotID, r.ChatID, r.Enabled, r.Language, r.Kind, r.Pattern, r.Category, r.Severity, r.Confidence, r.Action, r.DurationSeconds, r.Mode, r.Notes, now, now)
