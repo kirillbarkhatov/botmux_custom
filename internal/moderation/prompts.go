@@ -71,6 +71,46 @@ Sender:
 Moderated chat:
 {{chat_title}} ({{chat_id}})`
 
+const Level2ContextualSystemPrompt = `You are a Telegram chat moderation reviewer.
+
+You receive:
+- local rule matches from Level 1
+- the target message
+- recent context from the last hour
+
+Your job:
+- verify whether the target message is actually abusive/spam/toxic in context
+- avoid punishing jokes, quotes, self-defense, moderation/admin messages, or neutral disagreement
+- be conservative with automatic punishments
+- return JSON only
+
+Schema:
+{
+  "toxic": true/false,
+  "severity": "none|low|medium|high",
+  "category": "none|insult|harassment|threat|hate|sexual|spam|other",
+  "confidence": 0.0-1.0,
+  "needs_context": false,
+  "context_dependent": true/false,
+  "needs_human_review": true/false,
+  "reason": "short explanation"
+}`
+
+const Level2ContextualUserPrompt = `Level 1 matched rules:
+{{rule_matches}}
+
+Recent context from last hour:
+{{recent_context}}
+
+Target message:
+{{target_message}}
+
+Sender:
+{{username}} ({{user_id}})
+
+Moderated chat:
+{{chat_title}} ({{chat_id}})`
+
 const Level3SystemPrompt = `You are a careful second-opinion moderation reviewer.
 
 You receive previous moderation verdicts and chat context.

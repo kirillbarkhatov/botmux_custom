@@ -25,44 +25,6 @@ func NewService(s *store.Store) *Service {
 }
 
 func (s *Service) EnsureDefaults(botID, chatID int64) error {
-	levels, err := s.store.GetModerationLevels(botID, chatID)
-	if err != nil {
-		return err
-	}
-	if len(levels) >= 3 {
-		return nil
-	}
-	providers, _ := s.store.ListModerationProviders(false)
-	var localID, openAIID int64
-	for _, p := range providers {
-		if !p.Enabled {
-			continue
-		}
-		if localID == 0 && (p.Kind == "local" || p.Kind == "openai_compatible" || p.Kind == "openai-compatible") {
-			localID = p.ID
-		}
-		if openAIID == 0 && p.Kind == "openai" {
-			openAIID = p.ID
-		}
-	}
-	exists := map[int]bool{}
-	for _, l := range levels {
-		exists[l.Level] = true
-	}
-	for i := 1; i <= 3; i++ {
-		if exists[i] {
-			continue
-		}
-		d := DefaultLevel(i, botID, chatID, localID, openAIID)
-		if err := s.store.SaveModerationLevel(models.ModerationChatLevel{
-			BotID: botID, ChatID: chatID, Level: d.Level, Name: d.Name, Enabled: d.Enabled,
-			ProviderID: d.ProviderID, Required: d.Required, OnlyIfUncertain: d.OnlyIfUncertain,
-			SystemPrompt: d.SystemPrompt, UserPromptTemplate: d.UserPrompt, MinConfidence: d.MinConfidence,
-			TriggerSeverity: d.TriggerSeverity, Action: d.Action,
-		}); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -86,9 +48,6 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 	if bot != nil && msg.UserID != 0 && msg.UserID == bot.GetSelfID() {
 		return
 	}
-	if err := s.EnsureDefaults(msg.BotID, msg.ChatID); err != nil {
-		log.Printf("[moderation] ensure defaults failed: %v", err)
-	}
 	eventID, created, err := s.store.CreateModerationEvent(models.ModerationEvent{
 		BotID: msg.BotID, ChatID: msg.ChatID, MessageID: msg.MessageID, UserID: msg.UserID, Username: msg.Username,
 		MessageText: msg.Text, MessageDate: msg.Date, Status: "skipped", AlertChatID: cfg.AlertChatID,
@@ -101,51 +60,106 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 		return
 	}
 	event := models.ModerationEvent{ID: eventID, BotID: msg.BotID, ChatID: msg.ChatID, MessageID: msg.MessageID, UserID: msg.UserID, Username: msg.Username, MessageText: msg.Text, MessageDate: msg.Date, AlertChatID: cfg.AlertChatID}
-	final, actionLevel, uncertain, results := s.evaluate(ctx, cfg, msg, eventID)
-	event.FinalToxic = final.Toxic
-	event.FinalSeverity = final.Severity
-	event.FinalCategory = final.Category
-	event.FinalConfidence = final.Confidence
-	event.FinalReason = final.Reason
-	if len(results) == 0 {
-		event.Status = "error"
-		event.ActionError = "no moderation levels produced a result"
+	if !cfg.RulesEnabled {
+		event.Status = "skipped"
+		event.ActionResult = "rules disabled"
 		_ = s.store.UpdateModerationEvent(event)
 		return
 	}
-	if uncertain && !final.Toxic {
-		event.Status = "flagged"
+	rules, err := s.store.ListModerationRules(msg.BotID, msg.ChatID, true)
+	if err != nil {
+		log.Printf("[moderation] rules load failed bot=%d chat=%d: %v", msg.BotID, msg.ChatID, err)
+		event.Status = "skipped"
+		event.ActionError = "rules load failed: " + err.Error()
+		_ = s.store.UpdateModerationEvent(event)
+		return
+	}
+	prefilter := EvaluateRules(msg.Text, rules)
+	if prefilter.Decision == "clean" || prefilter.Decision == "allowed" {
+		event.FinalToxic = false
+		event.FinalSeverity = "none"
+		event.FinalCategory = "none"
+		event.FinalConfidence = 0
+		event.FinalReason = prefilter.Reason
 		event.FinalAction = "none"
+		if prefilter.Decision == "allowed" {
+			_ = s.saveLevel1Result(eventID, prefilter)
+			event.Status = "ok"
+		} else if cfg.LogCleanMessages {
+			event.Status = "ok"
+		} else {
+			event.Status = "skipped"
+		}
 		_ = s.store.UpdateModerationEvent(event)
 		return
 	}
-	if !final.Toxic {
+	_ = s.saveLevel1Result(eventID, prefilter)
+	event.FinalToxic = true
+	event.FinalSeverity = prefilter.Severity
+	event.FinalCategory = prefilter.Category
+	event.FinalConfidence = prefilter.Confidence
+	event.FinalReason = prefilter.Reason
+	event.FinalAction = "none"
+	event.Status = "flagged"
+
+	hardLevel := actionLevelFromPrefilter(prefilter)
+	if prefilter.Decision == "hard_match" && hardLevel.Action != "" && hardLevel.Action != "none" {
+		event.FinalAction = hardLevel.Action
+		event.ActionDurationSeconds = hardLevel.DurationSeconds
+		results, _ := s.store.GetModerationLevelResults(eventID)
+		if err := s.applyAction(cfg, msg, &event, hardLevel, results, bot); err != nil {
+			event.ActionError = err.Error()
+			event.Status = "error"
+		} else if hardLevel.Action == "mute" || hardLevel.Action == "ban" {
+			event.Status = "action_taken"
+		}
+		_ = s.store.UpdateModerationEvent(event)
+		return
+	}
+
+	lastRun := parseTime(cfg.AILevel2LastRunAt)
+	if !ShouldRunAILevel2(prefilter, cfg, lastRun) {
+		event.ActionError = aiSkipReason(cfg, lastRun)
+		if hardLevel.Action != "" && hardLevel.Action != "none" {
+			event.FinalAction = hardLevel.Action
+			event.ActionDurationSeconds = hardLevel.DurationSeconds
+			results, _ := s.store.GetModerationLevelResults(eventID)
+			if err := s.applyAction(cfg, msg, &event, hardLevel, results, bot); err != nil {
+				event.ActionError = err.Error()
+				event.Status = "error"
+			}
+		}
+		_ = s.store.UpdateModerationEvent(event)
+		return
+	}
+
+	aiRes := s.runAILevel2(ctx, cfg, msg, prefilter)
+	aiRes.EventID = eventID
+	_ = s.store.SaveModerationLevelResult(aiRes)
+	if aiRes.Error == "" {
+		now := time.Now().Format(time.RFC3339)
+		_ = s.store.UpdateModerationAILevel2LastRun(msg.BotID, msg.ChatID, now)
+		cfg.AILevel2LastRunAt = now
+		event.FinalToxic = aiRes.Toxic
+		event.FinalSeverity = aiRes.Severity
+		event.FinalCategory = aiRes.Category
+		event.FinalConfidence = aiRes.Confidence
+		event.FinalReason = aiRes.Reason
+	} else {
+		event.ActionError = "AI Level 2 failed: " + aiRes.Error
+	}
+	if !event.FinalToxic {
 		event.Status = "ok"
 		event.FinalAction = "none"
 		_ = s.store.UpdateModerationEvent(event)
 		return
 	}
-	action := actionLevel.Action
-	if actionLevel.Level == 0 {
-		event.FinalAction = "none"
-		event.Status = "flagged"
-		event.ActionResult = "below action threshold"
-		_ = s.store.UpdateModerationEvent(event)
-		return
-	}
-	if action == "" {
-		action = "alert"
-	}
-	event.FinalAction = action
-	event.ActionDurationSeconds = actionLevel.DurationSeconds
-	event.Status = "flagged"
+	actionLevel := models.ModerationChatLevel{Level: 2, Action: "alert", TriggerSeverity: "low", MinConfidence: 0.70}
+	event.FinalAction = actionLevel.Action
+	results, _ := s.store.GetModerationLevelResults(eventID)
 	if err := s.applyAction(cfg, msg, &event, actionLevel, results, bot); err != nil {
 		event.ActionError = err.Error()
 		event.Status = "error"
-	} else if action == "mute" || action == "ban" {
-		event.Status = "action_taken"
-	} else {
-		event.Status = "flagged"
 	}
 	_ = s.store.UpdateModerationEvent(event)
 }
@@ -161,6 +175,165 @@ func (s *Service) TestClassify(ctx context.Context, req models.ModerationTestReq
 	msg := Message{BotID: req.BotID, ChatID: req.ChatID, MessageID: -1, UserID: req.UserID, Username: req.Username, Text: req.MessageText}
 	final, actionLevel, uncertain, results := s.evaluate(ctx, cfg, msg, 0)
 	return &models.ModerationTestResponse{FinalVerdict: final, FinalAction: actionLevel.Action, Uncertain: uncertain, Results: results}, nil
+}
+
+func (s *Service) TestRules(req models.ModerationRuleTestRequest) (*models.ModerationRuleTestResponse, error) {
+	cfg, err := s.store.GetModerationChatConfig(req.BotID, req.ChatID)
+	if err != nil {
+		cfg = &models.ModerationChatConfig{BotID: req.BotID, ChatID: req.ChatID, RulesEnabled: true, AILevel2Enabled: true, AILevel2MinIntervalSeconds: 3600, AILevel2ContextMinutes: 60, MaxTextLengthForAI: 4000}
+	}
+	rules, err := s.store.ListModerationRules(req.BotID, req.ChatID, true)
+	if err != nil {
+		return nil, err
+	}
+	result := EvaluateRules(req.Text, rules)
+	lastRun := parseTime(cfg.AILevel2LastRunAt)
+	interval := cfg.AILevel2MinIntervalSeconds
+	if interval <= 0 {
+		interval = 3600
+	}
+	next := ""
+	rateLimited := false
+	if !lastRun.IsZero() {
+		nextTime := lastRun.Add(time.Duration(interval) * time.Second)
+		next = nextTime.Format(time.RFC3339)
+		rateLimited = time.Now().Before(nextTime)
+	}
+	return &models.ModerationRuleTestResponse{
+		NormalizedText: result.NormalizedText, Decision: result.Decision, MatchedRules: result.MatchedRules,
+		WouldRunAILevel2: ShouldRunAILevel2(result, cfg, lastRun), AIRateLimited: rateLimited, NextAIAllowedAt: next,
+	}, nil
+}
+
+func (s *Service) saveLevel1Result(eventID int64, result models.ModerationPrefilterResult) error {
+	raw, _ := json.Marshal(result.MatchedRules)
+	res := models.ModerationLevelResult{
+		EventID: eventID, Level: 1, ProviderKind: "rules", Model: "local-rules",
+		Toxic:    result.Decision == "soft_match" || result.Decision == "hard_match",
+		Severity: result.Severity, Category: result.Category, Confidence: result.Confidence,
+		Reason: result.Reason, RawResponse: string(raw),
+	}
+	return s.store.SaveModerationLevelResult(res)
+}
+
+func (s *Service) runAILevel2(ctx context.Context, cfg *models.ModerationChatConfig, msg Message, prefilter models.ModerationPrefilterResult) models.ModerationLevelResult {
+	provider, err := s.store.GetModerationProvider(cfg.AILevel2ProviderID)
+	if err != nil || provider == nil || !provider.Enabled {
+		return models.ModerationLevelResult{Level: 2, ProviderID: cfg.AILevel2ProviderID, Error: "AI Level 2 provider is not configured or disabled"}
+	}
+	recent := s.recentContextLevel2(msg, cfg)
+	matches, _ := json.MarshalIndent(prefilter.MatchedRules, "", "  ")
+	userPrompt := renderLevel2ContextualPrompt(msg, recent, string(matches), cfg.MaxTextLengthForAI)
+	llmResult, err := s.client.Classify(ctx, *provider, Level2ContextualSystemPrompt, userPrompt)
+	res := models.ModerationLevelResult{Level: 2, ProviderID: provider.ID, ProviderKind: provider.Kind, Model: provider.Model}
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.Toxic = llmResult.Verdict.Toxic
+	res.Severity = llmResult.Verdict.Severity
+	res.Category = llmResult.Verdict.Category
+	res.Confidence = llmResult.Verdict.Confidence
+	res.NeedsContext = llmResult.Verdict.NeedsContext
+	res.ContextDependent = llmResult.Verdict.ContextDependent
+	res.NeedsHumanReview = llmResult.Verdict.NeedsHumanReview
+	res.Reason = llmResult.Verdict.Reason
+	res.RawResponse = llmResult.Raw
+	res.LatencyMS = llmResult.LatencyMS
+	return res
+}
+
+func (s *Service) recentContextLevel2(msg Message, cfg *models.ModerationChatConfig) string {
+	limit := 100
+	minutes := cfg.AILevel2ContextMinutes
+	if minutes <= 0 {
+		minutes = 60
+	}
+	msgs, err := s.store.GetMessages(msg.BotID, msg.ChatID, limit, 0)
+	if err != nil {
+		return ""
+	}
+	cutoff := time.Now().Add(-time.Duration(minutes) * time.Minute).UnixMilli()
+	var lines []string
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Date > 0 && m.Date < cutoff {
+			continue
+		}
+		text := truncate(m.Text, 600)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s (%d): %s", m.FromUser, m.FromID, text))
+	}
+	max := cfg.MaxTextLengthForAI
+	if max <= 0 {
+		max = 4000
+	}
+	return truncate(strings.Join(lines, "\n"), max)
+}
+
+func renderLevel2ContextualPrompt(msg Message, recent, matches string, max int) string {
+	if max <= 0 {
+		max = 4000
+	}
+	repl := map[string]string{
+		"{{rule_matches}}":   truncate(matches, max),
+		"{{recent_context}}": truncate(recent, max),
+		"{{target_message}}": truncate(msg.Text, max),
+		"{{username}}":       msg.Username,
+		"{{user_id}}":        fmt.Sprintf("%d", msg.UserID),
+		"{{chat_title}}":     msg.ChatTitle,
+		"{{chat_id}}":        fmt.Sprintf("%d", msg.ChatID),
+	}
+	out := Level2ContextualUserPrompt
+	for k, v := range repl {
+		out = strings.ReplaceAll(out, k, v)
+	}
+	return out
+}
+
+func actionLevelFromPrefilter(result models.ModerationPrefilterResult) models.ModerationChatLevel {
+	action := result.Action
+	if action == "" {
+		action = "none"
+	}
+	return models.ModerationChatLevel{
+		Level: 1, Name: "Level 1: rules", Action: action, DurationSeconds: result.DurationSeconds,
+		MinConfidence: 0.70, TriggerSeverity: "low",
+	}
+}
+
+func parseTime(v string) time.Time {
+	if v == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func aiSkipReason(cfg *models.ModerationChatConfig, lastRun time.Time) string {
+	if cfg == nil || !cfg.AILevel2Enabled {
+		return "AI Level 2 skipped: disabled"
+	}
+	if cfg.AILevel2ProviderID == 0 {
+		return "AI Level 2 skipped: provider is not configured"
+	}
+	if lastRun.IsZero() {
+		return "AI Level 2 skipped"
+	}
+	interval := cfg.AILevel2MinIntervalSeconds
+	if interval <= 0 {
+		interval = 3600
+	}
+	next := lastRun.Add(time.Duration(interval) * time.Second)
+	if time.Now().Before(next) {
+		return "AI Level 2 skipped: rate limited until " + next.Format(time.RFC3339)
+	}
+	return "AI Level 2 skipped"
 }
 
 func (s *Service) evaluate(ctx context.Context, cfg *models.ModerationChatConfig, msg Message, eventID int64) (models.ModerationVerdict, models.ModerationChatLevel, bool, []models.ModerationLevelResult) {

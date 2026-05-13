@@ -308,10 +308,38 @@ func (s *Store) migrate() error {
 			include_context INTEGER NOT NULL DEFAULT 1,
 			context_messages_limit INTEGER NOT NULL DEFAULT 30,
 			context_minutes INTEGER NOT NULL DEFAULT 30,
+			rules_enabled INTEGER NOT NULL DEFAULT 1,
+			ai_level2_enabled INTEGER NOT NULL DEFAULT 1,
+			ai_level2_provider_id INTEGER NOT NULL DEFAULT 0,
+			ai_level2_min_interval_seconds INTEGER NOT NULL DEFAULT 3600,
+			ai_level2_context_minutes INTEGER NOT NULL DEFAULT 60,
+			ai_level2_last_run_at TEXT NOT NULL DEFAULT '',
+			log_clean_messages INTEGER NOT NULL DEFAULT 0,
+			max_text_length_for_ai INTEGER NOT NULL DEFAULT 4000,
 			created_at TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL DEFAULT '',
 			UNIQUE(bot_id, chat_id)
 		);
+		CREATE TABLE IF NOT EXISTS moderation_rules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bot_id INTEGER NOT NULL DEFAULT 0,
+			chat_id INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			language TEXT NOT NULL DEFAULT 'any',
+			kind TEXT NOT NULL,
+			pattern TEXT NOT NULL,
+			category TEXT NOT NULL DEFAULT 'other',
+			severity TEXT NOT NULL DEFAULT 'low',
+			confidence REAL NOT NULL DEFAULT 0.70,
+			action TEXT NOT NULL DEFAULT 'none',
+			duration_seconds INTEGER NOT NULL DEFAULT 0,
+			mode TEXT NOT NULL DEFAULT 'soft',
+			notes TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_moderation_rules_scope ON moderation_rules(bot_id, chat_id, enabled);
+		CREATE INDEX IF NOT EXISTS idx_moderation_rules_kind ON moderation_rules(kind);
 		CREATE TABLE IF NOT EXISTS moderation_providers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -393,6 +421,30 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_moderation_results_event ON moderation_level_results(event_id, level);
 	`)
 	if err != nil {
+		return err
+	}
+	for _, col := range []struct {
+		name string
+		def  string
+	}{
+		{"rules_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"ai_level2_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"ai_level2_provider_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"ai_level2_min_interval_seconds", "INTEGER NOT NULL DEFAULT 3600"},
+		{"ai_level2_context_minutes", "INTEGER NOT NULL DEFAULT 60"},
+		{"ai_level2_last_run_at", "TEXT NOT NULL DEFAULT ''"},
+		{"log_clean_messages", "INTEGER NOT NULL DEFAULT 0"},
+		{"max_text_length_for_ai", "INTEGER NOT NULL DEFAULT 4000"},
+	} {
+		var has int
+		s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('moderation_chat_configs') WHERE name=?`, col.name).Scan(&has)
+		if has == 0 {
+			if _, err := s.db.Exec(`ALTER TABLE moderation_chat_configs ADD COLUMN ` + col.name + ` ` + col.def); err != nil {
+				return err
+			}
+		}
+	}
+	if err := s.seedDefaultModerationRules(); err != nil {
 		return err
 	}
 
@@ -1521,34 +1573,181 @@ func (s *Store) GetBridgeMsgMappingReverse(bridgeID int64, telegramMsgID int) (s
 
 // Moderation methods
 
+func (s *Store) seedDefaultModerationRules() error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM moderation_rules`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	now := time.Now().Format(time.RFC3339)
+	rules := []models.ModerationRule{
+		{Kind: "phrase", Pattern: "t.me/joinchat", Category: "spam", Severity: "medium", Confidence: 0.85, Mode: "soft", Notes: "Telegram invite spam marker"},
+		{Kind: "phrase", Pattern: "crypto giveaway", Category: "spam", Severity: "medium", Confidence: 0.85, Mode: "soft"},
+		{Kind: "phrase", Pattern: "free money", Category: "spam", Severity: "low", Confidence: 0.75, Mode: "soft"},
+		{Kind: "keyword", Pattern: "casino", Category: "spam", Severity: "low", Confidence: 0.75, Mode: "soft"},
+		{Kind: "regex", Pattern: `(?i)\b(airdrop|giveaway)\b.*\b(wallet|crypto|usdt|btc)\b`, Category: "spam", Severity: "medium", Confidence: 0.80, Mode: "soft"},
+		{Kind: "phrase", Pattern: "i will kill you", Category: "threat", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+		{Kind: "phrase", Pattern: "kill yourself", Category: "harassment", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+		{Kind: "phrase", Pattern: "я тебя убью", Language: "ru", Category: "threat", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+		{Kind: "phrase", Pattern: "убей себя", Language: "ru", Category: "harassment", Severity: "high", Confidence: 0.90, Action: "alert", Mode: "hard"},
+		{Kind: "phrase", Pattern: "you are worthless", Category: "harassment", Severity: "medium", Confidence: 0.80, Mode: "soft"},
+		{Kind: "phrase", Pattern: "никчемный человек", Language: "ru", Category: "harassment", Severity: "medium", Confidence: 0.80, Mode: "soft"},
+	}
+	for _, r := range rules {
+		normalizeModerationRule(&r)
+		if r.Language == "" {
+			r.Language = "any"
+		}
+		if _, err := s.db.Exec(`INSERT INTO moderation_rules (bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at)
+			VALUES (0, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.Language, r.Kind, r.Pattern, r.Category, r.Severity, r.Confidence, r.Action, r.DurationSeconds, r.Mode, r.Notes, now, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) GetModerationChatConfig(botID, chatID int64) (*models.ModerationChatConfig, error) {
 	var c models.ModerationChatConfig
-	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes, created_at, updated_at
+	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes,
+			rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai,
+			created_at, updated_at
 		FROM moderation_chat_configs WHERE bot_id=? AND chat_id=?`, botID, chatID).
-		Scan(&c.ID, &c.BotID, &c.ChatID, &c.Enabled, &c.AlertChatID, &c.SkipBotMessages, &c.IncludeContext, &c.ContextMessagesLimit, &c.ContextMinutes, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.BotID, &c.ChatID, &c.Enabled, &c.AlertChatID, &c.SkipBotMessages, &c.IncludeContext, &c.ContextMessagesLimit, &c.ContextMinutes,
+			&c.RulesEnabled, &c.AILevel2Enabled, &c.AILevel2ProviderID, &c.AILevel2MinIntervalSeconds, &c.AILevel2ContextMinutes, &c.AILevel2LastRunAt, &c.LogCleanMessages, &c.MaxTextLengthForAI,
+			&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	normalizeModerationChatConfig(&c)
 	return &c, nil
 }
 
 func (s *Store) SaveModerationChatConfig(c models.ModerationChatConfig) error {
 	now := time.Now().Format(time.RFC3339)
+	normalizeModerationChatConfig(&c)
+	_, err := s.db.Exec(`INSERT INTO moderation_chat_configs
+		(bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes,
+		 rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(bot_id, chat_id) DO UPDATE SET
+			enabled=excluded.enabled, alert_chat_id=excluded.alert_chat_id, skip_bot_messages=excluded.skip_bot_messages,
+			include_context=excluded.include_context, context_messages_limit=excluded.context_messages_limit,
+			context_minutes=excluded.context_minutes, rules_enabled=excluded.rules_enabled, ai_level2_enabled=excluded.ai_level2_enabled,
+			ai_level2_provider_id=excluded.ai_level2_provider_id, ai_level2_min_interval_seconds=excluded.ai_level2_min_interval_seconds,
+			ai_level2_context_minutes=excluded.ai_level2_context_minutes, log_clean_messages=excluded.log_clean_messages,
+			max_text_length_for_ai=excluded.max_text_length_for_ai, updated_at=excluded.updated_at`,
+		c.BotID, c.ChatID, c.Enabled, c.AlertChatID, c.SkipBotMessages, c.IncludeContext, c.ContextMessagesLimit, c.ContextMinutes,
+		c.RulesEnabled, c.AILevel2Enabled, c.AILevel2ProviderID, c.AILevel2MinIntervalSeconds, c.AILevel2ContextMinutes, c.AILevel2LastRunAt, c.LogCleanMessages, c.MaxTextLengthForAI, now, now)
+	return err
+}
+
+func normalizeModerationChatConfig(c *models.ModerationChatConfig) {
+	oldShape := c.AILevel2MinIntervalSeconds == 0 && c.AILevel2ContextMinutes == 0 && c.MaxTextLengthForAI == 0
+	if oldShape {
+		c.RulesEnabled = true
+		c.AILevel2Enabled = true
+	}
 	if c.ContextMessagesLimit <= 0 {
 		c.ContextMessagesLimit = 30
 	}
 	if c.ContextMinutes <= 0 {
 		c.ContextMinutes = 30
 	}
-	_, err := s.db.Exec(`INSERT INTO moderation_chat_configs
-		(bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(bot_id, chat_id) DO UPDATE SET
-			enabled=excluded.enabled, alert_chat_id=excluded.alert_chat_id, skip_bot_messages=excluded.skip_bot_messages,
-			include_context=excluded.include_context, context_messages_limit=excluded.context_messages_limit,
-			context_minutes=excluded.context_minutes, updated_at=excluded.updated_at`,
-		c.BotID, c.ChatID, c.Enabled, c.AlertChatID, c.SkipBotMessages, c.IncludeContext, c.ContextMessagesLimit, c.ContextMinutes, now, now)
+	if c.AILevel2MinIntervalSeconds <= 0 {
+		c.AILevel2MinIntervalSeconds = 3600
+	}
+	if c.AILevel2ContextMinutes <= 0 {
+		c.AILevel2ContextMinutes = 60
+	}
+	if c.MaxTextLengthForAI <= 0 {
+		c.MaxTextLengthForAI = 4000
+	}
+}
+
+func (s *Store) UpdateModerationAILevel2LastRun(botID, chatID int64, at string) error {
+	_, err := s.db.Exec(`UPDATE moderation_chat_configs SET ai_level2_last_run_at=?, updated_at=? WHERE bot_id=? AND chat_id=?`, at, time.Now().Format(time.RFC3339), botID, chatID)
 	return err
+}
+
+func (s *Store) ListModerationRules(botID, chatID int64, includeGlobal bool) ([]models.ModerationRule, error) {
+	q := `SELECT id, bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at FROM moderation_rules WHERE `
+	args := []any{}
+	if includeGlobal {
+		q += `((bot_id=0 AND chat_id=0) OR (bot_id=? AND chat_id=?))`
+		args = append(args, botID, chatID)
+	} else {
+		q += `bot_id=? AND chat_id=?`
+		args = append(args, botID, chatID)
+	}
+	q += ` ORDER BY bot_id, chat_id, id`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ModerationRule
+	for rows.Next() {
+		var r models.ModerationRule
+		if err := rows.Scan(&r.ID, &r.BotID, &r.ChatID, &r.Enabled, &r.Language, &r.Kind, &r.Pattern, &r.Category, &r.Severity, &r.Confidence, &r.Action, &r.DurationSeconds, &r.Mode, &r.Notes, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (s *Store) GetModerationRule(id int64) (*models.ModerationRule, error) {
+	var r models.ModerationRule
+	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at FROM moderation_rules WHERE id=?`, id).
+		Scan(&r.ID, &r.BotID, &r.ChatID, &r.Enabled, &r.Language, &r.Kind, &r.Pattern, &r.Category, &r.Severity, &r.Confidence, &r.Action, &r.DurationSeconds, &r.Mode, &r.Notes, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *Store) SaveModerationRule(r models.ModerationRule) error {
+	now := time.Now().Format(time.RFC3339)
+	normalizeModerationRule(&r)
+	if r.ID == 0 {
+		r.Enabled = true
+		_, err := s.db.Exec(`INSERT INTO moderation_rules (bot_id, chat_id, enabled, language, kind, pattern, category, severity, confidence, action, duration_seconds, mode, notes, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.BotID, r.ChatID, r.Enabled, r.Language, r.Kind, r.Pattern, r.Category, r.Severity, r.Confidence, r.Action, r.DurationSeconds, r.Mode, r.Notes, now, now)
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE moderation_rules SET bot_id=?, chat_id=?, enabled=?, language=?, kind=?, pattern=?, category=?, severity=?, confidence=?, action=?, duration_seconds=?, mode=?, notes=?, updated_at=? WHERE id=?`,
+		r.BotID, r.ChatID, r.Enabled, r.Language, r.Kind, r.Pattern, r.Category, r.Severity, r.Confidence, r.Action, r.DurationSeconds, r.Mode, r.Notes, now, r.ID)
+	return err
+}
+
+func (s *Store) DeleteModerationRule(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM moderation_rules WHERE id=?`, id)
+	return err
+}
+
+func normalizeModerationRule(r *models.ModerationRule) {
+	if r.Language == "" {
+		r.Language = "any"
+	}
+	if r.Category == "" {
+		r.Category = "other"
+	}
+	if r.Severity == "" {
+		r.Severity = "low"
+	}
+	if r.Confidence <= 0 {
+		r.Confidence = 0.70
+	}
+	if r.Action == "" {
+		r.Action = "none"
+	}
+	if r.Mode == "" {
+		r.Mode = "soft"
+	}
 }
 
 func (s *Store) ListModerationProviders(mask bool) ([]models.ModerationProvider, error) {

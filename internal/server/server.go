@@ -309,6 +309,11 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/moderation/providers/update", s.adminOnly(s.handleModerationProviderSave))
 	mux.HandleFunc("/api/moderation/providers/delete", s.adminOnly(s.handleModerationProviderDelete))
 	mux.HandleFunc("/api/moderation/providers/test", s.adminOnly(s.handleModerationProviderTest))
+	mux.HandleFunc("/api/moderation/rules", s.adminOnly(s.handleModerationRules))
+	mux.HandleFunc("/api/moderation/rules/add", s.adminOnly(s.handleModerationRuleSave))
+	mux.HandleFunc("/api/moderation/rules/update", s.adminOnly(s.handleModerationRuleSave))
+	mux.HandleFunc("/api/moderation/rules/delete", s.adminOnly(s.handleModerationRuleDelete))
+	mux.HandleFunc("/api/moderation/rules/test", s.adminOnly(s.handleModerationRuleTest))
 	mux.HandleFunc("/api/moderation/levels", s.adminOnly(s.handleModerationLevels))
 	mux.HandleFunc("/api/moderation/levels/update", s.adminOnly(s.handleModerationLevelUpdate))
 	mux.HandleFunc("/api/moderation/events", s.adminOnly(s.handleModerationEvents))
@@ -2026,7 +2031,7 @@ func (s *Server) handleModerationConfig(w http.ResponseWriter, r *http.Request) 
 		chatID, _ := strconv.ParseInt(r.URL.Query().Get("chat_id"), 10, 64)
 		cfg, err := s.store.GetModerationChatConfig(botID, chatID)
 		if err != nil {
-			cfg = &models.ModerationChatConfig{BotID: botID, ChatID: chatID, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30}
+			cfg = &models.ModerationChatConfig{BotID: botID, ChatID: chatID, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30, RulesEnabled: true, AILevel2Enabled: true, AILevel2MinIntervalSeconds: 3600, AILevel2ContextMinutes: 60, MaxTextLengthForAI: 4000}
 		}
 		_ = moderation.NewService(s.store).EnsureDefaults(botID, chatID)
 		writeJSON(w, cfg)
@@ -2088,6 +2093,65 @@ func (s *Server) handleModerationProviderDelete(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationRules(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	botID, _ := strconv.ParseInt(q.Get("bot_id"), 10, 64)
+	chatID, _ := strconv.ParseInt(q.Get("chat_id"), 10, 64)
+	includeGlobal := q.Get("include_global") != "false"
+	rules, err := s.store.ListModerationRules(botID, chatID, includeGlobal)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if rules == nil {
+		rules = []models.ModerationRule{}
+	}
+	writeJSON(w, rules)
+}
+
+func (s *Server) handleModerationRuleSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	var rule models.ModerationRule
+	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.SaveModerationRule(rule); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationRuleDelete(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err := s.store.DeleteModerationRule(id); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationRuleTest(w http.ResponseWriter, r *http.Request) {
+	var req models.ModerationRuleTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err)
+		return
+	}
+	if req.Text == "" {
+		req.Text = r.FormValue("text")
+	}
+	resp, err := moderation.NewService(s.store).TestRules(req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleModerationProviderTest(w http.ResponseWriter, r *http.Request) {

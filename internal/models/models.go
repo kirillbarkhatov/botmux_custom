@@ -179,17 +179,74 @@ type LLMRouteResult struct {
 
 // ModerationChatConfig stores moderation settings for exactly one bot/chat pair.
 type ModerationChatConfig struct {
-	ID                   int64  `json:"id"`
-	BotID                int64  `json:"bot_id"`
-	ChatID               int64  `json:"chat_id"`
-	Enabled              bool   `json:"enabled"`
-	AlertChatID          int64  `json:"alert_chat_id"`
-	SkipBotMessages      bool   `json:"skip_bot_messages"`
-	IncludeContext       bool   `json:"include_context"`
-	ContextMessagesLimit int    `json:"context_messages_limit"`
-	ContextMinutes       int    `json:"context_minutes"`
-	CreatedAt            string `json:"created_at"`
-	UpdatedAt            string `json:"updated_at"`
+	ID                         int64  `json:"id"`
+	BotID                      int64  `json:"bot_id"`
+	ChatID                     int64  `json:"chat_id"`
+	Enabled                    bool   `json:"enabled"`
+	AlertChatID                int64  `json:"alert_chat_id"`
+	SkipBotMessages            bool   `json:"skip_bot_messages"`
+	IncludeContext             bool   `json:"include_context"`
+	ContextMessagesLimit       int    `json:"context_messages_limit"`
+	ContextMinutes             int    `json:"context_minutes"`
+	RulesEnabled               bool   `json:"rules_enabled"`
+	AILevel2Enabled            bool   `json:"ai_level2_enabled"`
+	AILevel2ProviderID         int64  `json:"ai_level2_provider_id"`
+	AILevel2MinIntervalSeconds int    `json:"ai_level2_min_interval_seconds"`
+	AILevel2ContextMinutes     int    `json:"ai_level2_context_minutes"`
+	AILevel2LastRunAt          string `json:"ai_level2_last_run_at"`
+	LogCleanMessages           bool   `json:"log_clean_messages"`
+	MaxTextLengthForAI         int    `json:"max_text_length_for_ai"`
+	CreatedAt                  string `json:"created_at"`
+	UpdatedAt                  string `json:"updated_at"`
+}
+
+type ModerationRule struct {
+	ID              int64   `json:"id"`
+	BotID           int64   `json:"bot_id"`
+	ChatID          int64   `json:"chat_id"`
+	Enabled         bool    `json:"enabled"`
+	Language        string  `json:"language"`
+	Kind            string  `json:"kind"`
+	Pattern         string  `json:"pattern"`
+	Category        string  `json:"category"`
+	Severity        string  `json:"severity"`
+	Confidence      float64 `json:"confidence"`
+	Action          string  `json:"action"`
+	DurationSeconds int64   `json:"duration_seconds"`
+	Mode            string  `json:"mode"`
+	Notes           string  `json:"notes"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+}
+
+type ModerationRuleMatch struct {
+	RuleID          int64   `json:"rule_id"`
+	BotID           int64   `json:"bot_id"`
+	ChatID          int64   `json:"chat_id"`
+	Scope           string  `json:"scope"`
+	Language        string  `json:"language"`
+	Kind            string  `json:"kind"`
+	Pattern         string  `json:"pattern"`
+	Category        string  `json:"category"`
+	Severity        string  `json:"severity"`
+	Confidence      float64 `json:"confidence"`
+	Action          string  `json:"action"`
+	DurationSeconds int64   `json:"duration_seconds"`
+	Mode            string  `json:"mode"`
+	Notes           string  `json:"notes"`
+	Error           string  `json:"error,omitempty"`
+}
+
+type ModerationPrefilterResult struct {
+	NormalizedText  string                `json:"normalized_text"`
+	Decision        string                `json:"decision"`
+	MatchedRules    []ModerationRuleMatch `json:"matched_rules"`
+	Severity        string                `json:"severity"`
+	Category        string                `json:"category"`
+	Confidence      float64               `json:"confidence"`
+	Action          string                `json:"action"`
+	DurationSeconds int64                 `json:"duration_seconds"`
+	Reason          string                `json:"reason"`
 }
 
 type ModerationProvider struct {
@@ -291,6 +348,21 @@ type ModerationTestRequest struct {
 	RecentContext string `json:"recent_context"`
 	UserID        int64  `json:"user_id"`
 	Username      string `json:"username"`
+}
+
+type ModerationRuleTestRequest struct {
+	BotID  int64  `json:"bot_id"`
+	ChatID int64  `json:"chat_id"`
+	Text   string `json:"text"`
+}
+
+type ModerationRuleTestResponse struct {
+	NormalizedText   string                `json:"normalized_text"`
+	Decision         string                `json:"decision"`
+	MatchedRules     []ModerationRuleMatch `json:"matched_rules"`
+	WouldRunAILevel2 bool                  `json:"would_run_ai_level2"`
+	AIRateLimited    bool                  `json:"ai_rate_limited"`
+	NextAIAllowedAt  string                `json:"next_ai_allowed_at"`
 }
 
 type ModerationTestResponse struct {

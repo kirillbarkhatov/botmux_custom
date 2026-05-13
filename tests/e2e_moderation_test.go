@@ -3,9 +3,7 @@ package tests
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -52,18 +50,26 @@ func saveModerationProvider(t *testing.T, h *e2eHarness, url string, kind string
 	return providers[len(providers)-1].ID
 }
 
+func saveModerationRule(t *testing.T, h *e2eHarness, rule models.ModerationRule) {
+	t.Helper()
+	if err := h.store.SaveModerationRule(rule); err != nil {
+		t.Fatalf("SaveModerationRule: %v", err)
+	}
+}
+
 func TestE2E_Moderation(t *testing.T) {
 	t.Run("enabled chat sends alert with same bot and deduplicates", func(t *testing.T) {
 		h := setupE2E(t)
 		llm := newFakeLLM(t)
 		llm.SetNextRoute(toxicVerdict())
 		botID := registerAndManage(h, "mod01:token", "modbot01")
-		saveModerationProvider(t, h, llm.URL(), "local")
+		_ = saveModerationProvider(t, h, llm.URL(), "local")
 		_ = h.store.UpsertChat(botID, models.Chat{ID: 100, Type: "supergroup", Title: "Source", UpdatedAt: time.Now().Format(time.RFC3339)})
 		_ = h.store.UpsertChat(botID, models.Chat{ID: 200, Type: "supergroup", Title: "Alerts", UpdatedAt: time.Now().Format(time.RFC3339)})
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 100, Enabled: true, AlertChatID: 200, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30}); err != nil {
 			t.Fatalf("SaveModerationChatConfig: %v", err)
 		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 100, Enabled: true, Kind: "phrase", Pattern: "you are awful", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "alert"})
 
 		update := makeTextUpdate(1, 100, 501, "baduser", "you are awful")
 		h.InjectUpdate(botID, update)
@@ -99,8 +105,8 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 		h.InjectUpdate(botID, makeTextUpdate(2, 10, 7, "u", "hello"))
 		h.InjectUpdate(botID, makeTextUpdate(3, 11, 7, "u", "hello"))
-		if cnt := llm.RequestsCountFor("/chat/completions"); cnt != 2 {
-			t.Fatalf("expected L1+L2 only for enabled chat, got %d LLM calls", cnt)
+		if cnt := llm.RequestsCountFor("/chat/completions"); cnt != 0 {
+			t.Fatalf("clean messages must not call moderation LLM, got %d calls", cnt)
 		}
 		eventsA, _ := h.store.ListModerationEvents(botID, 10, 0, "", "", "", "", "", 10, 0)
 		eventsB, _ := h.store.ListModerationEvents(botID, 11, 0, "", "", "", "", "", 10, 0)
@@ -149,18 +155,11 @@ func TestE2E_Moderation(t *testing.T) {
 		llm := newFakeLLM(t)
 		llm.SetNextRoute(toxicVerdict())
 		botID := registerAndManage(h, "mod05:token", "modbot05")
-		providerID := saveModerationProvider(t, h, llm.URL(), "local")
+		_ = saveModerationProvider(t, h, llm.URL(), "local")
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 100, Enabled: true, AlertChatID: 200, SkipBotMessages: true, IncludeContext: true}); err != nil {
 			t.Fatalf("SaveModerationChatConfig: %v", err)
 		}
-		for _, level := range []int{1, 2} {
-			if err := h.store.SaveModerationLevel(models.ModerationChatLevel{
-				BotID: botID, ChatID: 100, Level: level, Name: "Level", Enabled: true, ProviderID: providerID, Required: true,
-				SystemPrompt: "Return JSON", UserPromptTemplate: "{{message_text}}", MinConfidence: 0.7, TriggerSeverity: "medium", Action: "mute", DurationSeconds: 3600,
-			}); err != nil {
-				t.Fatalf("SaveModerationLevel: %v", err)
-			}
-		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 100, Enabled: true, Kind: "keyword", Pattern: "bad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "mute", DurationSeconds: 3600})
 		h.InjectUpdate(botID, makeTextUpdate(5, 100, 55, "mute_me", "bad"))
 		reqs := h.fake.RequestsFor("restrictChatMember")
 		if len(reqs) != 1 || !strings.Contains(string(reqs[0].body), `"chat_id":100`) && !strings.Contains(string(reqs[0].body), "chat_id=100") {
@@ -174,18 +173,11 @@ func TestE2E_Moderation(t *testing.T) {
 		llm := newFakeLLM(t)
 		llm.SetNextRoute(toxicVerdict())
 		botID := registerAndManage(h, "mod06:token", "modbot06")
-		providerID := saveModerationProvider(t, h, llm.URL(), "local")
+		_ = saveModerationProvider(t, h, llm.URL(), "local")
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 300, Enabled: true, AlertChatID: 400, SkipBotMessages: true, IncludeContext: true}); err != nil {
 			t.Fatalf("SaveModerationChatConfig: %v", err)
 		}
-		for _, level := range []int{1, 2} {
-			if err := h.store.SaveModerationLevel(models.ModerationChatLevel{
-				BotID: botID, ChatID: 300, Level: level, Name: "Level", Enabled: true, ProviderID: providerID, Required: true,
-				SystemPrompt: "Return JSON", UserPromptTemplate: "{{message_text}}", MinConfidence: 0.7, TriggerSeverity: "medium", Action: "ban", DurationSeconds: 3600,
-			}); err != nil {
-				t.Fatalf("SaveModerationLevel: %v", err)
-			}
-		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 300, Enabled: true, Kind: "keyword", Pattern: "bad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "ban", DurationSeconds: 3600})
 		h.InjectUpdate(botID, makeTextUpdate(6, 300, 66, "ban_me", "bad"))
 		reqs := h.fake.RequestsFor("banChatMember")
 		if len(reqs) != 1 || !strings.Contains(string(reqs[0].body), `"chat_id":300`) && !strings.Contains(string(reqs[0].body), "chat_id=300") {
@@ -199,35 +191,19 @@ func jsonNumber(v int64) string {
 	return string(b)
 }
 
-func TestE2E_ModerationUncertainCallsLevel3(t *testing.T) {
-	var mu sync.Mutex
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		calls++
-		n := calls
-		mu.Unlock()
-		verdict := cleanVerdict()
-		if n == 1 || n == 3 {
-			verdict = toxicVerdict()
-		}
-		data, _ := json.Marshal(verdict)
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": string(data)}}}})
-	}))
-	defer srv.Close()
-
+func TestE2E_ModerationAILevel2RateLimit(t *testing.T) {
 	h := setupE2E(t)
+	llm := newFakeLLM(t)
+	llm.SetNextRoute(toxicVerdict())
 	botID := registerAndManage(h, "mod04:token", "modbot04")
-	saveModerationProvider(t, h, srv.URL, "local")
-	saveModerationProvider(t, h, srv.URL, "openai")
-	if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 100, Enabled: true, AlertChatID: 0, SkipBotMessages: true, IncludeContext: true}); err != nil {
+	providerID := saveModerationProvider(t, h, llm.URL(), "local")
+	if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 100, Enabled: true, AlertChatID: 0, SkipBotMessages: true, IncludeContext: true, RulesEnabled: true, AILevel2Enabled: true, AILevel2ProviderID: providerID, AILevel2MinIntervalSeconds: 3600, AILevel2ContextMinutes: 60, MaxTextLengthForAI: 4000}); err != nil {
 		t.Fatalf("SaveModerationChatConfig: %v", err)
 	}
+	saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 100, Enabled: true, Kind: "keyword", Pattern: "ambiguous", Category: "other", Severity: "medium", Confidence: 0.8, Mode: "soft", Action: "none"})
 	h.InjectUpdate(botID, makeTextUpdate(4, 100, 88, "maybe", "ambiguous"))
-	mu.Lock()
-	got := calls
-	mu.Unlock()
-	if got != 3 {
-		t.Fatalf("expected L1, L2, and uncertain L3 calls, got %d", got)
+	h.InjectUpdate(botID, makeTextUpdate(5, 100, 88, "maybe", "ambiguous"))
+	if got := llm.RequestsCountFor("/chat/completions"); got != 1 {
+		t.Fatalf("expected AI Level 2 once due to per-chat rate limit, got %d", got)
 	}
 }
