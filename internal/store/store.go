@@ -1609,6 +1609,17 @@ func (s *Store) seedDefaultModerationRules() error {
 			}
 		}
 	}
+	var profanityPackCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM moderation_rules WHERE notes LIKE 'ru-profanity-pack:%'`).Scan(&profanityPackCount); err != nil {
+		return err
+	}
+	if profanityPackCount == 0 {
+		for _, r := range moderationRUProfanityRules {
+			if err := s.insertModerationSeedRule(r); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

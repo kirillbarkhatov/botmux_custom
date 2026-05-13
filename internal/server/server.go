@@ -313,6 +313,7 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/moderation/rules/add", s.adminOnly(s.handleModerationRuleSave))
 	mux.HandleFunc("/api/moderation/rules/update", s.adminOnly(s.handleModerationRuleSave))
 	mux.HandleFunc("/api/moderation/rules/delete", s.adminOnly(s.handleModerationRuleDelete))
+	mux.HandleFunc("/api/moderation/rules/bulk-update", s.adminOnly(s.handleModerationRulesBulkUpdate))
 	mux.HandleFunc("/api/moderation/rules/test", s.adminOnly(s.handleModerationRuleTest))
 	mux.HandleFunc("/api/moderation/levels", s.adminOnly(s.handleModerationLevels))
 	mux.HandleFunc("/api/moderation/levels/update", s.adminOnly(s.handleModerationLevelUpdate))
@@ -2135,6 +2136,76 @@ func (s *Server) handleModerationRuleDelete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationRulesBulkUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	var req struct {
+		BotID           int64    `json:"bot_id"`
+		ChatID          int64    `json:"chat_id"`
+		Scope           string   `json:"scope"`
+		Category        string   `json:"category"`
+		SourceCategory  string   `json:"source_category"`
+		Enabled         *bool    `json:"enabled"`
+		Severity        *string  `json:"severity"`
+		Confidence      *float64 `json:"confidence"`
+		Mode            *string  `json:"mode"`
+		Action          *string  `json:"action"`
+		DurationSeconds *int64   `json:"duration_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err)
+		return
+	}
+	rules, err := s.store.ListModerationRules(req.BotID, req.ChatID, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	updated := 0
+	for _, rule := range rules {
+		scope := "chat"
+		if rule.BotID == 0 && rule.ChatID == 0 {
+			scope = "global"
+		}
+		if req.Scope != "" && req.Scope != scope {
+			continue
+		}
+		if req.SourceCategory != "" {
+			if !strings.Contains(rule.Notes, "source_category="+req.SourceCategory) {
+				continue
+			}
+		} else if req.Category != "" && rule.Category != req.Category {
+			continue
+		}
+		if req.Enabled != nil {
+			rule.Enabled = *req.Enabled
+		}
+		if req.Severity != nil {
+			rule.Severity = *req.Severity
+		}
+		if req.Confidence != nil {
+			rule.Confidence = *req.Confidence
+		}
+		if req.Mode != nil {
+			rule.Mode = *req.Mode
+		}
+		if req.Action != nil {
+			rule.Action = *req.Action
+		}
+		if req.DurationSeconds != nil {
+			rule.DurationSeconds = *req.DurationSeconds
+		}
+		if err := s.store.SaveModerationRule(rule); err != nil {
+			writeError(w, err)
+			return
+		}
+		updated++
+	}
+	writeJSON(w, map[string]any{"status": "ok", "updated": updated})
 }
 
 func (s *Server) handleModerationRuleTest(w http.ResponseWriter, r *http.Request) {

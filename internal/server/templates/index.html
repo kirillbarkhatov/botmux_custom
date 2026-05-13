@@ -1661,11 +1661,9 @@ body::before { display: none; }
           <select id="modRuleFilterSeverity" onchange="modRulesPage=1;renderModerationRules()"><option value="">severity</option><option>none</option><option>low</option><option>medium</option><option>high</option></select>
           <select id="modRuleFilterMode" onchange="modRulesPage=1;renderModerationRules()"><option value="">mode</option><option>allow</option><option>soft</option><option>hard</option></select>
           <select id="modRuleFilterSource" onchange="modRulesPage=1;renderModerationRules()"><option value="">source category</option></select>
-          <select id="modRulePageSize" onchange="modRulesPage=1;renderModerationRules()"><option>25</option><option selected>50</option><option>100</option><option>200</option></select>
         </div>
         <div class="route-header" style="margin-bottom:8px">
           <div class="hint" id="modRulesSummary"></div>
-          <div><button class="btn btn-sm" onclick="changeModRulesPage(-1)">‹</button> <span id="modRulesPageInfo" class="hint"></span> <button class="btn btn-sm" onclick="changeModRulesPage(1)">›</button></div>
         </div>
         <div id="modRules"></div>
         <div id="modRuleForm" style="display:none;margin-top:12px" class="modal-field">
@@ -3739,6 +3737,8 @@ async function removeChat() {
 let modProvidersCache = [];
 let modRulesCache = [];
 let modRulesPage = 1;
+let modRuleGroupsCache = [];
+let modExpandedRuleCategories = {};
 let modAlertChatsLen = 0;
 
 async function loadModeration() {
@@ -3900,6 +3900,10 @@ function modRuleSourceCategory(r) {
   return m ? m[1] : '';
 }
 
+function modRuleCategoryLabel(r) {
+  return modRuleSourceCategory(r) || r.category || 'other';
+}
+
 function filteredModerationRules() {
   const q = (document.getElementById('modRuleSearch')?.value || '').toLowerCase().trim();
   const scope = document.getElementById('modRuleFilterScope')?.value || '';
@@ -3926,25 +3930,94 @@ function filteredModerationRules() {
 
 function renderModerationRules() {
   const filtered = filteredModerationRules();
-  const pageSize = parseInt(document.getElementById('modRulePageSize')?.value || '50');
-  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  modRulesPage = Math.min(Math.max(1, modRulesPage), pages);
-  const start = (modRulesPage - 1) * pageSize;
-  const rows = filtered.slice(start, start + pageSize);
   document.getElementById('modRulesSummary').textContent = `${filtered.length} / ${modRulesCache.length} rules`;
-  document.getElementById('modRulesPageInfo').textContent = `${modRulesPage} / ${pages}`;
-  document.getElementById('modRules').innerHTML = rows.length ? `<div class="route-table" style="overflow:auto;max-height:560px"><table style="width:100%;font-size:12px;table-layout:fixed">
+  const byCat = new Map();
+  filtered.forEach(r => {
+    const label = modRuleCategoryLabel(r);
+    if (!byCat.has(label)) byCat.set(label, []);
+    byCat.get(label).push(r);
+  });
+  modRuleGroupsCache = [...byCat.entries()].map(([label, rules]) => ({label, rules})).sort((a, b) => a.label.localeCompare(b.label));
+  document.getElementById('modRules').innerHTML = modRuleGroupsCache.length ? modRuleGroupsCache.map((g, idx) => renderModRuleCategory(g, idx)).join('') : `<div class="hint">${t('no_data')}</div>`;
+}
+
+function renderModRuleCategory(group, idx) {
+  const enabled = group.rules.filter(r => r.enabled).length;
+  const global = group.rules.filter(r => r.bot_id === 0 && r.chat_id === 0).length;
+  const chat = group.rules.length - global;
+  const severities = [...new Set(group.rules.map(r => r.severity || 'none'))].join(', ');
+  const modes = [...new Set(group.rules.map(r => r.mode || 'soft'))].join(', ');
+  const actions = [...new Set(group.rules.map(r => r.action || 'none'))].join(', ');
+  const open = !!modExpandedRuleCategories[group.label];
+  return `<div class="route-item" style="display:block;margin-bottom:10px">
+    <div class="route-header">
+      <div>
+        <button class="btn btn-sm" onclick="toggleModRuleCategory(${idx})">${open ? '−' : '+'}</button>
+        <b>${esc(group.label)}</b>
+        <span class="badge">${group.rules.length}</span>
+        <span class="badge">${enabled} enabled</span>
+        <span class="badge">global ${global}</span>
+        ${chat ? `<span class="badge">chat ${chat}</span>` : ''}
+        <div class="hint">severity: ${esc(severities)} · mode: ${esc(modes)} · action: ${esc(actions)}</div>
+      </div>
+    </div>
+    <div class="tag-form" style="margin-top:8px">
+      <select id="modCatEnabled${idx}"><option value="">enabled: keep</option><option value="true">enable</option><option value="false">disable</option></select>
+      <select id="modCatSeverity${idx}"><option value="">severity: keep</option><option>none</option><option>low</option><option>medium</option><option>high</option></select>
+      <input id="modCatConfidence${idx}" type="number" min="0" max="1" step="0.01" placeholder="confidence">
+      <select id="modCatMode${idx}"><option value="">mode: keep</option><option>allow</option><option>soft</option><option>hard</option></select>
+      <select id="modCatAction${idx}"><option value="">action: keep</option><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
+      <input id="modCatDuration${idx}" type="number" min="0" placeholder="duration">
+      <button class="btn btn-sm" onclick="bulkUpdateModRuleCategory(${idx})">APPLY</button>
+    </div>
+    ${open ? renderModRuleRows(group.rules) : ''}
+  </div>`;
+}
+
+function renderModRuleRows(rows) {
+  return `<div class="route-table" style="overflow:auto;max-height:420px;margin-top:10px"><table style="width:100%;font-size:12px;table-layout:fixed">
     <thead><tr><th>scope</th><th>enabled</th><th>language</th><th>kind</th><th>pattern</th><th>category</th><th>severity</th><th>confidence</th><th>mode</th><th>action</th><th>duration</th><th></th></tr></thead>
     <tbody>${rows.map(r => `<tr title="${esc(r.notes || '')}">
       <td>${r.bot_id === 0 && r.chat_id === 0 ? 'global' : 'chat'}</td><td>${r.enabled ? 'yes' : 'no'}</td><td>${esc(r.language)}</td><td>${esc(r.kind)}</td>
       <td style="word-break:break-all">${esc(r.pattern)}</td><td>${esc(r.category)}</td><td>${esc(r.severity)}</td><td>${Number(r.confidence || 0).toFixed(2)}</td><td>${esc(r.mode)}</td><td>${esc(r.action)}</td><td>${r.duration_seconds || 0}</td>
       <td><button class="btn btn-sm" onclick="editModRule(${r.id})">${t('edit')}</button> <button class="btn btn-danger btn-sm" onclick="deleteModRule(${r.id})">${t('del')}</button></td>
-    </tr>`).join('')}</tbody></table></div>` : `<div class="hint">${t('no_data')}</div>`;
+    </tr>`).join('')}</tbody></table></div>`;
 }
 
-function changeModRulesPage(delta) {
-  modRulesPage += delta;
+function toggleModRuleCategory(idx) {
+  const g = modRuleGroupsCache[idx];
+  if (!g) return;
+  modExpandedRuleCategories[g.label] = !modExpandedRuleCategories[g.label];
   renderModerationRules();
+}
+
+async function bulkUpdateModRuleCategory(idx) {
+  const g = modRuleGroupsCache[idx];
+  if (!g) return;
+  const enabledVal = document.getElementById(`modCatEnabled${idx}`).value;
+  const severity = document.getElementById(`modCatSeverity${idx}`).value;
+  const confidenceRaw = document.getElementById(`modCatConfidence${idx}`).value;
+  const mode = document.getElementById(`modCatMode${idx}`).value;
+  const action = document.getElementById(`modCatAction${idx}`).value;
+  const durationRaw = document.getElementById(`modCatDuration${idx}`).value;
+  const sourceCategory = g.rules.some(r => modRuleSourceCategory(r) === g.label) ? g.label : '';
+  const body = {
+    bot_id: currentBotID,
+    chat_id: currentChat.id,
+    scope: document.getElementById('modRuleFilterScope')?.value || '',
+    category: sourceCategory ? '' : g.label,
+    source_category: sourceCategory
+  };
+  if (enabledVal) body.enabled = enabledVal === 'true';
+  if (severity) body.severity = severity;
+  if (confidenceRaw !== '') body.confidence = parseFloat(confidenceRaw);
+  if (mode) body.mode = mode;
+  if (action) body.action = action;
+  if (durationRaw !== '') body.duration_seconds = parseInt(durationRaw || '0');
+  const res = await api('/api/moderation/rules/bulk-update', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  toast(`${t('saved')}: ${res.updated}`);
+  modExpandedRuleCategories[g.label] = true;
+  await loadModerationRules();
 }
 
 function showModRuleForm() {
