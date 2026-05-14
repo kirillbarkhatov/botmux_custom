@@ -1892,7 +1892,7 @@ func (s *Store) ListModerationCategorySettings(botID, chatID int64) ([]models.Mo
 	for _, r := range rules {
 		key := ModerationRuleCategoryKey(r)
 		if byKey[key] == nil {
-			byKey[key] = &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: true}
+			byKey[key] = &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: false}
 			severities[key] = map[string]bool{}
 		}
 		byKey[key].RulesCount++
@@ -1944,7 +1944,7 @@ func (s *Store) GetModerationCategorySetting(botID, chatID int64, key string) (*
 		Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: true, DisplayName: ModerationCategoryDisplayName(key)}, nil
+			return &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: false, DisplayName: ModerationCategoryDisplayName(key)}, nil
 		}
 		return nil, err
 	}

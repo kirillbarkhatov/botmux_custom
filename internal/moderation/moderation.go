@@ -153,9 +153,6 @@ func (s *Service) categorySettingForResult(msg Message, result models.Moderation
 		log.Printf("[moderation] category setting load failed bot=%d chat=%d category=%s: %v", msg.BotID, msg.ChatID, key, err)
 		return nil
 	}
-	if setting.ID == 0 {
-		return nil
-	}
 	return setting
 }
 

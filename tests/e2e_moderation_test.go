@@ -101,6 +101,9 @@ func TestE2E_Moderation(t *testing.T) {
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 100, Enabled: true, AlertChatID: 200, SkipBotMessages: true, IncludeContext: true, ContextMessagesLimit: 30, ContextMinutes: 30}); err != nil {
 			t.Fatalf("SaveModerationChatConfig: %v", err)
 		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 100, CategoryKey: "harassment", Enabled: true, AlertEnabled: true}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting: %v", err)
+		}
 		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 100, Enabled: true, Kind: "phrase", Pattern: "you are awful", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "alert"})
 
 		update := makeTextUpdate(1, 100, 501, "baduser", "you are awful")
@@ -189,6 +192,9 @@ func TestE2E_Moderation(t *testing.T) {
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 100, Enabled: true, AlertChatID: 200, SkipBotMessages: true, IncludeContext: true}); err != nil {
 			t.Fatalf("SaveModerationChatConfig: %v", err)
 		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 100, CategoryKey: "harassment", Enabled: true, MuteMinutes: 60}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting: %v", err)
+		}
 		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 100, Enabled: true, Kind: "keyword", Pattern: "bad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "mute", DurationSeconds: 3600})
 		h.InjectUpdate(botID, makeTextUpdate(5, 100, 55, "mute_me", "bad"))
 		reqs := h.fake.RequestsFor("restrictChatMember")
@@ -206,6 +212,9 @@ func TestE2E_Moderation(t *testing.T) {
 		_ = saveModerationProvider(t, h, llm.URL(), "local")
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 300, Enabled: true, AlertChatID: 400, SkipBotMessages: true, IncludeContext: true}); err != nil {
 			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 300, CategoryKey: "harassment", Enabled: true, BanHours: 1}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting: %v", err)
 		}
 		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 300, Enabled: true, Kind: "keyword", Pattern: "bad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "ban", DurationSeconds: 3600})
 		h.InjectUpdate(botID, makeTextUpdate(6, 300, 66, "ban_me", "bad"))
@@ -229,6 +238,23 @@ func TestE2E_Moderation(t *testing.T) {
 		reqs := h.fake.RequestsFor("restrictChatMember")
 		if len(reqs) != 1 || requestJSONInt(reqs[0].body, "chat_id") != 1000 || requestJSONInt(reqs[0].body, "user_id") != 77 {
 			t.Fatalf("expected category mute in source chat 1000 for user 77, got %+v", reqs)
+		}
+	})
+
+	t.Run("filter categories default off", func(t *testing.T) {
+		h := setupE2E(t)
+		botID := registerAndManage(h, "mod11:token", "modbot11")
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 1100, Enabled: true, SkipBotMessages: true, IncludeContext: true}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 1100, Enabled: true, Kind: "keyword", Pattern: "defaultoff", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "mute", DurationSeconds: 300})
+		h.InjectUpdate(botID, makeTextUpdate(11, 1100, 78, "off_user", "defaultoff"))
+		if got := len(h.fake.RequestsFor("restrictChatMember")); got != 0 {
+			t.Fatalf("expected no mute with category default off, got %d", got)
+		}
+		events, _ := h.store.ListModerationEvents(botID, 1100, 0, "", "", "", "", "", 10, 0)
+		if len(events) != 1 || events[0].Status != "skipped" {
+			t.Fatalf("expected skipped event with category default off, got %+v", events)
 		}
 	})
 

@@ -5392,7 +5392,8 @@ async function loadModerationCategories() {
 function renderModerationOverview() {
   if (!currentChat) return;
   const cfg = modConfigCache || {};
-  const filterOn = cfg.rules_enabled !== false;
+  const enabledCategories = modCategoriesCache.filter(c => c.enabled).length;
+  const filterOn = enabledCategories > 0;
   const newUsersOn = newMemberHasRestrictions(cfg);
   const dash = document.getElementById('modDashboard');
   if (!dash) return;
@@ -5421,7 +5422,7 @@ function renderModerationOverview() {
       <div>
         <div class="mod-status-title">Фильтр</div>
         ${modBadge(filterOn ? 'ON' : 'OFF', filterOn ? 'clean' : 'status-error')}
-        <div class="mod-status-note">${filterOn ? 'Включен' : 'Выключен'} · ${modCategoriesCache.length} категорий</div>
+        <div class="mod-status-note">${filterOn ? 'Включен' : 'Выключен'} · ${enabledCategories}/${modCategoriesCache.length} категорий</div>
       </div>
       <div class="mod-status-actions"><button class="btn btn-sm" onclick="openFilterModal()">Настроить</button></div>
     </div>` : ''}`;
@@ -5460,7 +5461,7 @@ function openNewMemberModal() {
   const cfg = modConfigCache || {};
   modRestrictFields().forEach(([field, id]) => {
     const el = document.getElementById(id);
-    if (el) el.checked = !cfg[field];
+    if (el) el.checked = !!cfg.new_member_mute_enabled && !cfg[field];
   });
   const seconds = cfg.new_member_mute_seconds || 300;
   const value = document.getElementById('modNmDurationValue');
@@ -5510,12 +5511,6 @@ function closeFilterModal() {
   document.getElementById('modFilterModal').style.display = 'none';
 }
 
-async function toggleModerationFilter() {
-  await saveModerationConfigPatch({rules_enabled: modConfigCache?.rules_enabled === false});
-  toast(t('saved'));
-  renderFilterModal();
-}
-
 async function toggleModerationCategory(key, enabled) {
   const c = modCategoriesCache.find(x => x.category_key === key);
   if (!c) return;
@@ -5529,7 +5524,8 @@ async function toggleModerationCategory(key, enabled) {
 
 function renderFilterModal() {
   const list = document.getElementById('modCategoryList');
-  const filterOn = modConfigCache?.rules_enabled !== false;
+  const enabledCategories = modCategoriesCache.filter(c => c.enabled).length;
+  const filterOn = enabledCategories > 0;
   document.getElementById('modFilterStatusText').innerHTML = modBadge(filterOn ? 'Включен' : 'Выключен', filterOn ? 'clean' : 'status-error');
   list.innerHTML = modCategoriesCache.map(c => `
     <div class="mod-item">
@@ -5669,9 +5665,6 @@ async function saveCategoryModal() {
         <div class="profile-name">Фильтр</div>
         <div class="profile-id" id="modFilterStatusText"></div>
       </div>
-    </div>
-    <div class="mod-card-actions" style="justify-content:flex-end;margin-bottom:12px">
-      <button class="btn btn-sm" onclick="toggleModerationFilter()">Включить / выключить фильтр</button>
     </div>
     <div id="modCategoryList" class="mod-list"></div>
     <div class="mod-modal-footer">
