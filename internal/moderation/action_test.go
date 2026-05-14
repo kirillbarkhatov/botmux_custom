@@ -29,10 +29,10 @@ func TestApplyActionMuteDurationNormalization(t *testing.T) {
 		input    int64
 		expected int64
 	}{
-		{name: "zero uses default", input: 0, expected: 300},
-		{name: "below min clamps up", input: 60, expected: 300},
-		{name: "above max clamps down", input: 7200, expected: 3600},
-		{name: "valid duration preserved", input: 1800, expected: 1800},
+		{name: "zero means indefinite", input: 0, expected: 0},
+		{name: "below telegram temporary limit means indefinite", input: 30, expected: 0},
+		{name: "one minute preserved", input: 60, expected: 60},
+		{name: "long duration preserved", input: 7200, expected: 7200},
 	}
 
 	for _, tc := range tests {
@@ -51,15 +51,25 @@ func TestApplyActionMuteDurationNormalization(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyAction: %v", err)
 			}
-			gotDuration := bot.muteUntil - before
-			if gotDuration < tc.expected || gotDuration > tc.expected+2 {
+			gotDuration := int64(0)
+			if bot.muteUntil > 0 {
+				gotDuration = bot.muteUntil - before
+			}
+			if tc.expected == 0 && bot.muteUntil != 0 {
+				t.Fatalf("mute until = %d, want indefinite without until_date", bot.muteUntil)
+			}
+			if tc.expected > 0 && (gotDuration < tc.expected || gotDuration > tc.expected+2) {
 				t.Fatalf("mute until duration = %d, want about %d", gotDuration, tc.expected)
 			}
 			if event.ActionDurationSeconds != tc.expected {
 				t.Fatalf("event duration = %d, want %d", event.ActionDurationSeconds, tc.expected)
 			}
-			if event.ActionResult != "muted in source chat for "+itoa(tc.expected)+"s" {
-				t.Fatalf("unexpected action result: %q", event.ActionResult)
+			wantResult := "muted in source chat"
+			if tc.expected > 0 {
+				wantResult = "muted in source chat for " + itoa(tc.expected) + "s"
+			}
+			if event.ActionResult != wantResult {
+				t.Fatalf("unexpected action result: %q want %q", event.ActionResult, wantResult)
 			}
 		})
 	}

@@ -2067,14 +2067,8 @@ func normalizeModerationRule(r *models.ModerationRule) {
 }
 
 func normalizeModerationMuteSeconds(seconds int64) int64 {
-	if seconds <= 0 {
-		return 300
-	}
-	if seconds < 300 {
-		return 300
-	}
-	if seconds > 3600 {
-		return 3600
+	if seconds < 40 {
+		return 0
 	}
 	return seconds
 }

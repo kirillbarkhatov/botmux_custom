@@ -274,6 +274,39 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 	})
 
+	t.Run("active category rules take priority and keep own mute duration", func(t *testing.T) {
+		h := setupE2E(t)
+		botID := registerAndManage(h, "mod13:token", "modbot13")
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 1300, Enabled: true, NewMemberMuteEnabled: true, NewMemberMuteSeconds: 300, SkipBotMessages: true, IncludeContext: true}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 1300, CategoryKey: "hate_extremism", Enabled: false, BanHours: 1}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting disabled: %v", err)
+		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 1300, CategoryKey: "harassment_threats", Enabled: true, MuteMinutes: 1}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting active: %v", err)
+		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 1300, Enabled: true, Kind: "keyword", Pattern: "priorityword", Category: "hate", Severity: "high", Confidence: 0.99, Mode: "hard", Action: "ban", Notes: "source_category=hate_extremism"})
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 1300, Enabled: true, Kind: "keyword", Pattern: "priorityword", Category: "harassment", Severity: "low", Confidence: 0.70, Mode: "soft", Action: "none", Notes: "source_category=harassment_threats"})
+		before := time.Now().Unix()
+		h.InjectUpdate(botID, makeTextUpdate(13, 1300, 79, "priority_user", "priorityword"))
+		if got := len(h.fake.RequestsFor("banChatMember")); got != 0 {
+			t.Fatalf("disabled category must not ban, got %d", got)
+		}
+		reqs := h.fake.RequestsFor("restrictChatMember")
+		if len(reqs) != 1 {
+			t.Fatalf("expected active category mute, got %d", len(reqs))
+		}
+		until := requestJSONInt(reqs[0].body, "until_date")
+		if delta := until - before; delta < 40 || delta > 90 {
+			t.Fatalf("expected category mute around 60s, got delta=%ds body=%s", delta, string(reqs[0].body))
+		}
+		events, _ := h.store.ListModerationEvents(botID, 1300, 0, "", "", "", "", "", 10, 0)
+		if len(events) != 1 || events[0].FinalCategory != "harassment_threats" || events[0].ActionDurationSeconds != 60 {
+			t.Fatalf("unexpected active category event: %+v", events)
+		}
+	})
+
 	t.Run("filter categories default off", func(t *testing.T) {
 		h := setupE2E(t)
 		botID := registerAndManage(h, "mod11:token", "modbot11")
@@ -291,7 +324,7 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 	})
 
-	t.Run("new member mute clamps duration and skips bots and self", func(t *testing.T) {
+	t.Run("new member mute applies configured duration and skips bots and self", func(t *testing.T) {
 		h := setupE2E(t)
 		botID := registerAndManage(h, "mod07:token", "modbot07")
 		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 700, Enabled: true, NewMemberMuteEnabled: true, NewMemberMuteSeconds: 60}); err != nil {
@@ -311,8 +344,8 @@ func TestE2E_Moderation(t *testing.T) {
 			t.Fatalf("expected user 701 muted, got %d body=%s", got, string(reqs[0].body))
 		}
 		until := requestJSONInt(reqs[0].body, "until_date")
-		if got := until - before; got < 300 || got > 302 {
-			t.Fatalf("expected clamped 300s mute, got until delta %d body=%s", got, string(reqs[0].body))
+		if got := until - before; got < 40 || got > 90 {
+			t.Fatalf("expected configured 60s mute, got until delta %d body=%s", got, string(reqs[0].body))
 		}
 	})
 

@@ -3777,6 +3777,8 @@ async function refreshChat() {
   try {
     const c = await api(`/api/chats/refresh?bot_id=${currentBotID}&chat_id=${currentChat.id}`);
     currentChat = c; renderInfo(); toast(t('refreshed')); loadChats();
+    const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+    if (activeTab === 'moderation') await loadModeration();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -3807,6 +3809,66 @@ const modEventsLimit = 50;
 
 function modBadge(text, cls = '') {
   return `<span class="badge ${cls}">${esc(text)}</span>`;
+}
+
+function moderationCategoryLabel(category) {
+  const labels = {
+    spam_ads: 'Реклама и спам',
+    phishing_scam: 'Фишинг и мошенничество',
+    fraud_financial: 'Финансовое мошенничество',
+    profanity_ru: 'Русская ненормативная лексика',
+    cyber_abuse: 'Киберзлоупотребления',
+    evasion_meta: 'Обход модерации',
+    harassment_threats: 'Оскорбления и угрозы',
+    hate_extremism: 'Ненависть и экстремизм',
+    illegal_goods: 'Запрещенные товары',
+    self_harm_crisis: 'Самоповреждение и кризис',
+    sexual_grooming_risk: 'Сексуальные риски',
+    insult: 'Оскорбления',
+    harassment: 'Травля',
+    threat: 'Угрозы',
+    hate: 'Ненависть',
+    sexual: 'Сексуальный контент',
+    spam: 'Спам',
+    profanity: 'Ненормативная лексика',
+    new_member: 'Новые пользователи',
+    other: 'Другое',
+    none: 'Без категории'
+  };
+  return labels[category || 'none'] || category || 'Без категории';
+}
+
+function moderationActionLabel(action) {
+  const labels = {none:'Без действий', alert:'Лог', delete:'Удаление', mute:'Мьют', ban:'Бан'};
+  return labels[action || 'none'] || action || 'Без действий';
+}
+
+function moderationStatusLabel(status) {
+  const labels = {ok:'ОК', flagged:'Найдено', action_taken:'Действие выполнено', error:'Ошибка', skipped:'Пропущено'};
+  return labels[status || 'ok'] || status || 'ОК';
+}
+
+function moderationSeverityLabel(severity) {
+  const labels = {none:'Нет', low:'Низкая', medium:'Средняя', high:'Высокая'};
+  return labels[severity || 'none'] || severity || 'Нет';
+}
+
+function moderationDurationText(seconds) {
+  seconds = parseInt(seconds || '0');
+  if (!seconds) return '';
+  if (seconds % 3600 === 0) return `${seconds / 3600} ч`;
+  if (seconds % 60 === 0) return `${seconds / 60} мин`;
+  return `${seconds} сек`;
+}
+
+function moderationAppliedActions(e) {
+  const parts = [];
+  const result = String(e.action_result || '');
+  if (result.includes('message deleted') || e.final_action === 'delete') parts.push('Удаление');
+  if (e.alert_sent || result.includes('alert sent') || e.final_action === 'alert') parts.push('Лог');
+  if (e.final_action === 'mute') parts.push(`Мьют${e.action_duration_seconds ? ' ' + moderationDurationText(e.action_duration_seconds) : ''}`);
+  if (e.final_action === 'ban') parts.push(`Бан${e.action_duration_seconds ? ' ' + moderationDurationText(e.action_duration_seconds) : ''}`);
+  return [...new Set(parts)].join(', ') || 'Без действий';
 }
 
 function modStatusBadge(on, onText, offText) {
@@ -4338,11 +4400,10 @@ async function runModTest() {
 
 function renderRuleTestResult(res) {
   return `<div class="mod-item">
-    <div class="mod-meta">${modBadge(res.decision || 'clean', res.decision === 'clean' || res.decision === 'allowed' ? 'clean' : 'alert')}${modBadge(res.would_run_ai_level2 ? 'AI Level 2' : 'no AI', res.would_run_ai_level2 ? 'medium' : 'status-skipped')}${res.ai_rate_limited ? modBadge('rate limited', 'status-error') : ''}</div>
-    <div class="mod-meta-row"><span>normalized_text</span><span>${esc(res.normalized_text || '')}</span></div>
-    <div class="mod-meta-row"><span>matched_rules</span><span>${(res.matched_rules || []).length}</span></div>
-    <div class="mod-meta-row"><span>next_ai_allowed_at</span><span>${esc(res.next_ai_allowed_at || '—')}</span></div>
-    ${(res.matched_rules || []).map(r => `<div class="mod-item-note">#${r.rule_id} ${esc(r.kind)} · ${esc(r.pattern)} · ${esc(r.severity)} · ${esc(r.action)}</div>`).join('')}
+    <div class="mod-meta">${modBadge(res.decision === 'clean' ? 'Чисто' : res.decision === 'allowed' ? 'Разрешено' : 'Сработало', res.decision === 'clean' || res.decision === 'allowed' ? 'clean' : 'alert')}</div>
+    <div class="mod-meta-row"><span>Нормализованный текст</span><span>${esc(res.normalized_text || '')}</span></div>
+    <div class="mod-meta-row"><span>Совпадений</span><span>${(res.matched_rules || []).length}</span></div>
+    ${(res.matched_rules || []).map(r => `<div class="mod-item-note">#${r.rule_id} ${esc(r.kind)} · ${esc(r.pattern)} · ${moderationCategoryLabel(modRuleSourceCategory(r) || r.category)} · ${moderationSeverityLabel(r.severity)} · ${moderationActionLabel(r.action)}</div>`).join('')}
   </div>`;
 }
 
@@ -4406,10 +4467,10 @@ function renderModerationEvents() {
   modEventsCache.forEach(e => { if (counts[e.status] !== undefined) counts[e.status]++; });
   document.getElementById('modEventsSummary').textContent = `${modEventsCache.length} ${t('moderation_events_loaded')} · ${t('moderation_page_offset')} ${modEventsOffset}`;
   const statsHTML = `
-    <div class="stat-card"><div class="stat-value">${modEventsCache.length}</div><div class="stat-label">total</div></div>
-    <div class="stat-card"><div class="stat-value">${counts.action_taken}</div><div class="stat-label">action_taken</div></div>
-    <div class="stat-card"><div class="stat-value">${counts.flagged}</div><div class="stat-label">flagged</div></div>
-    <div class="stat-card"><div class="stat-value">${counts.error}</div><div class="stat-label">error</div></div>`;
+    <div class="stat-card"><div class="stat-value">${modEventsCache.length}</div><div class="stat-label">Всего</div></div>
+    <div class="stat-card"><div class="stat-value">${counts.action_taken}</div><div class="stat-label">Выполнено</div></div>
+    <div class="stat-card"><div class="stat-value">${counts.flagged}</div><div class="stat-label">Найдено</div></div>
+    <div class="stat-card"><div class="stat-value">${counts.error}</div><div class="stat-label">Ошибки</div></div>`;
   document.getElementById('modEventStats').innerHTML = statsHTML;
   const modalStats = document.getElementById('modEventStatsModal');
   if (modalStats) modalStats.innerHTML = statsHTML;
@@ -4426,11 +4487,11 @@ function renderModerationEvents() {
     <div class="mod-item" onclick="if(!event.target.closest('button'))loadModEventDetail(${e.id})">
       <div class="mod-item-main">
         <div>
-          <div class="mod-meta">${modBadge(e.status || 'ok', `status-${e.status || 'ok'}`)}${modBadge(e.final_severity || 'none', e.final_severity || 'none')}${modBadge(e.final_category || 'none')}${modBadge(e.final_action || 'none', e.final_action || 'none')}</div>
+          <div class="mod-meta">${modBadge(moderationStatusLabel(e.status), `status-${e.status || 'ok'}`)}${modBadge(moderationSeverityLabel(e.final_severity), e.final_severity || 'none')}${modBadge(moderationCategoryLabel(e.final_category))}${modBadge(moderationAppliedActions(e), e.final_action || 'none')}</div>
           <div class="mod-item-title" style="margin-top:6px">${esc(e.username || '')} (${e.user_id || '—'})</div>
           <div class="mod-item-note">${esc((e.message_text || '').substring(0, 180))}</div>
         </div>
-        <div class="mod-card-actions"><span class="msg-time">${esc(e.created_at || '')}</span><button class="btn btn-sm" onclick="loadModEventDetail(${e.id})">DETAIL</button></div>
+        <div class="mod-card-actions"><span class="msg-time">${esc(e.created_at || '')}</span><button class="btn btn-sm" onclick="loadModEventDetail(${e.id})">Детали</button></div>
       </div>
     </div>`).join('') || `<div class="mod-empty"><div class="mod-empty-title">${t('moderation_empty_events_title')}</div><div>${t('moderation_empty_events_text')}</div></div>`;
 }
@@ -4451,31 +4512,47 @@ function renderModEventDetail(e) {
     <div class="profile-identity">
       <div class="profile-name">${t('moderation_event')}</div>
       <div class="profile-id">#${e.id} · ${esc(e.created_at || '')}</div>
-      <div class="mod-meta" style="margin-top:6px">${modBadge(e.status || 'ok', `status-${e.status || 'ok'}`)}${modBadge(e.final_severity || 'none', e.final_severity || 'none')}${modBadge(e.final_action || 'none', e.final_action || 'none')}</div>
+      <div class="mod-meta" style="margin-top:6px">${modBadge(moderationStatusLabel(e.status), `status-${e.status || 'ok'}`)}${modBadge(moderationSeverityLabel(e.final_severity), e.final_severity || 'none')}${modBadge(moderationCategoryLabel(e.final_category))}${modBadge(moderationAppliedActions(e), e.final_action || 'none')}</div>
     </div>
   </div>
-  <div class="profile-section"><div class="profile-section-title">Message</div><pre class="mod-pre">${esc(e.message_text || '')}</pre></div>
+  <div class="profile-section"><div class="profile-section-title">Сообщение</div><pre class="mod-pre">${esc(e.message_text || '')}</pre></div>
   <div class="profile-section">
-    <div class="profile-section-title">${t('moderation_verdict')}</div>
-    <div class="mod-meta-row"><span>final_reason</span><span>${esc(e.final_reason || '—')}</span></div>
-    <div class="mod-meta-row"><span>confidence</span><span>${Number(e.final_confidence || 0).toFixed(2)}</span></div>
-    <div class="mod-meta-row"><span>action_result</span><span>${esc(e.action_result || '—')}</span></div>
-    <div class="mod-meta-row"><span>action_error</span><span>${esc(e.action_error || '—')}</span></div>
-    <div class="mod-meta-row"><span>alert</span><span>${e.alert_sent ? 'sent' : 'no'} · ${e.alert_chat_id || '—'} · ${e.alert_message_id || '—'}</span></div>
+    <div class="profile-section-title">Итог</div>
+    <div class="mod-meta-row"><span>Категория</span><span>${moderationCategoryLabel(e.final_category)}</span></div>
+    <div class="mod-meta-row"><span>Уверенность</span><span>${Number(e.final_confidence || 0).toFixed(2)}</span></div>
+    <div class="mod-meta-row"><span>Причина</span><span>${esc(moderationReasonText(e.final_reason) || '—')}</span></div>
+    <div class="mod-meta-row"><span>Действия</span><span>${esc(moderationAppliedActions(e))}</span></div>
+    ${e.action_error ? `<div class="mod-meta-row"><span>Ошибка</span><span>${esc(e.action_error)}</span></div>` : ''}
+    ${e.alert_sent ? `<div class="mod-meta-row"><span>Лог-чат</span><span>${e.alert_chat_id || '—'} · сообщение ${e.alert_message_id || '—'}</span></div>` : ''}
   </div>
-  <div class="profile-section"><div class="profile-section-title">${t('moderation_level_results')}</div>${renderLevelResults(e.level_results || [])}</div>`;
+  <div class="profile-section"><div class="profile-section-title">Сработавшие правила</div>${renderModerationRuleMatches(e.level_results || [])}</div>`;
+}
+
+function moderationReasonText(reason) {
+  const labels = {
+    'local moderation rule matched': 'Сработало локальное правило',
+    'moderation category disabled': 'Категория выключена',
+    'rules disabled': 'Правила выключены',
+    'allow rule matched': 'Сработало разрешающее правило',
+    'new member mute enabled': 'Включены ограничения для новых пользователей'
+  };
+  return labels[reason] || reason || '';
+}
+
+function renderModerationRuleMatches(results) {
+  const rules = [];
+  (results || []).filter(r => r.provider_kind === 'rules' && r.raw_response).forEach(r => {
+    try { JSON.parse(r.raw_response).forEach(x => rules.push(x)); } catch(e) {}
+  });
+  return rules.length ? `<div class="mod-list">${rules.map(r => `<div class="mod-item">
+    <div class="mod-meta">${modBadge(`#${r.rule_id || '—'}`)}${modBadge(moderationCategoryLabel(modRuleSourceCategory(r) || r.category))}${modBadge(moderationSeverityLabel(r.severity), r.severity || 'none')}${modBadge(moderationActionLabel(r.action), r.action || 'none')}</div>
+    <div class="mod-item-title" style="margin-top:6px">${esc(r.pattern || '—')}</div>
+    <div class="mod-item-note">${esc(r.kind || 'rule')} · ${esc(r.mode || 'soft')}</div>
+  </div>`).join('')}</div>` : `<div class="hint">${t('no_data')}</div>`;
 }
 
 function renderLevelResults(results) {
-  return results.length ? `<div class="mod-list">${results.map(r => `<div class="mod-item">
-    <div class="mod-meta">${modBadge(`Level ${r.level}`)}${modBadge(r.provider_kind || 'provider')}${modBadge(r.toxic ? 'toxic' : 'clean', r.toxic ? 'high' : 'clean')}${modBadge(r.severity || 'none', r.severity || 'none')}</div>
-    <div class="mod-meta-row"><span>model</span><span>${esc(r.model || '—')}</span></div>
-    <div class="mod-meta-row"><span>confidence</span><span>${Number(r.confidence || 0).toFixed(2)}</span></div>
-    <div class="mod-meta-row"><span>latency</span><span>${r.latency_ms || 0}ms</span></div>
-    <div class="mod-meta-row"><span>reason</span><span>${esc(r.reason || '—')}</span></div>
-    ${r.error ? `<div class="mod-warning">${esc(r.error)}</div>` : ''}
-    ${r.raw_response ? `<details style="margin-top:8px"><summary>${t('moderation_raw_response')}</summary><pre class="mod-pre">${esc(r.raw_response)}</pre></details>` : ''}
-  </div>`).join('')}</div>` : `<div class="hint">${t('no_data')}</div>`;
+  return renderModerationRuleMatches(results);
 }
 
 // ===== STATS =====
@@ -5965,12 +6042,12 @@ function toggleCategoryNumber(id, defaultValue) {
     <div class="mod-dashboard" id="modEventStatsModal"></div>
     <div class="mod-toolbar" style="margin-top:12px">
       <input id="modFilterUser" type="number" placeholder="user id">
-      <select id="modFilterSeverity"><option value="">severity</option><option>low</option><option>medium</option><option>high</option></select>
-      <select id="modFilterAction"><option value="">action</option><option>none</option><option>alert</option><option>mute</option><option>ban</option></select>
-      <select id="modFilterStatus"><option value="">status</option><option>ok</option><option>flagged</option><option>action_taken</option><option>error</option><option>skipped</option></select>
+      <select id="modFilterSeverity"><option value="">Важность</option><option value="low">Низкая</option><option value="medium">Средняя</option><option value="high">Высокая</option></select>
+      <select id="modFilterAction"><option value="">Действие</option><option value="none">Без действий</option><option value="alert">Лог</option><option value="delete">Удаление</option><option value="mute">Мьют</option><option value="ban">Бан</option></select>
+      <select id="modFilterStatus"><option value="">Статус</option><option value="ok">ОК</option><option value="flagged">Найдено</option><option value="action_taken">Действие выполнено</option><option value="error">Ошибка</option><option value="skipped">Пропущено</option></select>
       <input id="modFilterDateFrom" type="date">
       <input id="modFilterDateTo" type="date">
-      <button class="btn btn-sm" onclick="resetModerationEventPaging()">FILTER</button>
+      <button class="btn btn-sm" onclick="resetModerationEventPaging()">Фильтр</button>
     </div>
     <div id="modEventsPager" class="mod-card-actions" style="justify-content:flex-end;margin:10px 0"></div>
     <div id="modEvents" class="mod-list"></div>

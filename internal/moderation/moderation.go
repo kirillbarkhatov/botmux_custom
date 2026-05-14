@@ -73,13 +73,13 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 		_ = s.store.UpdateModerationEvent(event)
 		return
 	}
-	prefilter := EvaluateRules(msg.Text, rules)
+	prefilter := s.evaluateRulesForChat(msg.BotID, msg.ChatID, msg.Text, rules)
 	categorySetting := s.categorySettingForResult(msg, prefilter)
 	if categorySetting != nil && !categorySetting.Enabled && (prefilter.Decision == "soft_match" || prefilter.Decision == "hard_match") {
 		event.Status = "skipped"
 		event.FinalToxic = false
 		event.FinalSeverity = "none"
-		event.FinalCategory = prefilter.Category
+		event.FinalCategory = categorySetting.CategoryKey
 		event.FinalConfidence = prefilter.Confidence
 		event.FinalReason = "moderation category disabled"
 		_ = s.saveLevel1Result(eventID, prefilter)
@@ -169,9 +169,41 @@ func categoryKeyFromMatch(m models.ModerationRuleMatch) string {
 	return "other"
 }
 
+func (s *Service) evaluateRulesForChat(botID, chatID int64, text string, rules []models.ModerationRule) models.ModerationPrefilterResult {
+	settings, err := s.store.ListModerationCategorySettings(botID, chatID)
+	if err != nil {
+		log.Printf("[moderation] category settings load failed bot=%d chat=%d: %v", botID, chatID, err)
+		return EvaluateRules(text, rules)
+	}
+	enabledCategories := map[string]bool{}
+	for _, setting := range settings {
+		if setting.Enabled {
+			enabledCategories[setting.CategoryKey] = true
+		}
+	}
+	if len(enabledCategories) == 0 {
+		return EvaluateRules(text, rules)
+	}
+	activeRules := make([]models.ModerationRule, 0, len(rules))
+	otherRules := make([]models.ModerationRule, 0, len(rules))
+	for _, rule := range rules {
+		if enabledCategories[store.ModerationRuleCategoryKey(rule)] {
+			activeRules = append(activeRules, rule)
+		} else {
+			otherRules = append(otherRules, rule)
+		}
+	}
+	result := EvaluateRules(text, activeRules)
+	if result.Decision == "soft_match" || result.Decision == "hard_match" || result.Decision == "allowed" {
+		return result
+	}
+	return EvaluateRules(text, otherRules)
+}
+
 func applyCategoryAction(result *models.ModerationPrefilterResult, setting models.ModerationCategorySetting) {
 	result.Action = "none"
 	result.DurationSeconds = 0
+	result.Category = setting.CategoryKey
 	if setting.AlertEnabled {
 		result.Action = "alert"
 	}
@@ -199,7 +231,7 @@ func (s *Service) TestRules(req models.ModerationRuleTestRequest) (*models.Moder
 	if err != nil {
 		return nil, err
 	}
-	result := EvaluateRules(req.Text, rules)
+	result := s.evaluateRulesForChat(req.BotID, req.ChatID, req.Text, rules)
 	lastRun := parseTime(cfg.AILevel2LastRunAt)
 	interval := cfg.AILevel2MinIntervalSeconds
 	if interval <= 0 {
@@ -529,12 +561,19 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 	switch action {
 	case "mute":
 		duration := NormalizeMuteDurationSeconds(level.DurationSeconds)
-		until := time.Now().Add(time.Duration(duration) * time.Second).Unix()
+		var until int64
+		if duration > 0 {
+			until = time.Now().Add(time.Duration(duration) * time.Second).Unix()
+		}
 		if err := bot.MuteUser(msg.ChatID, msg.UserID, until); err != nil {
 			return err
 		}
 		event.ActionDurationSeconds = duration
-		actionResults = append(actionResults, fmt.Sprintf("muted in source chat for %ds", duration))
+		if duration > 0 {
+			actionResults = append(actionResults, fmt.Sprintf("muted in source chat for %ds", duration))
+		} else {
+			actionResults = append(actionResults, "muted in source chat")
+		}
 	case "ban":
 		duration := level.DurationSeconds
 		var until int64
@@ -556,14 +595,8 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 }
 
 func NormalizeMuteDurationSeconds(seconds int64) int64 {
-	if seconds <= 0 {
-		return 300
-	}
-	if seconds < 300 {
-		return 300
-	}
-	if seconds > 3600 {
-		return 3600
+	if seconds < 40 {
+		return 0
 	}
 	return seconds
 }
