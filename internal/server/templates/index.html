@@ -1711,62 +1711,7 @@ body::before { display: none; }
 
     <div id="tab-moderation" class="tab-content content" style="display:none;">
       <div class="mod-page">
-        <div class="mod-hero">
-          <div>
-            <div class="mod-title" data-i18n="tab_moderation">Moderation</div>
-            <div class="mod-subtitle" id="modChatSubtitle">—</div>
-          </div>
-          <div class="mod-badges" id="modHeaderBadges"></div>
-        </div>
-
         <div class="mod-dashboard" id="modDashboard"></div>
-
-        <div class="mod-summary-grid">
-          <div class="mod-card">
-            <div class="mod-card-head">
-              <div>
-                <div class="mod-card-title" data-i18n="moderation_general">Moderation settings</div>
-                <div class="mod-card-subtitle" data-i18n="moderation_pipeline_hint">Local rules check messages first; AI Level 2 is used only for rule matches.</div>
-              </div>
-              <div class="mod-actions">
-                <button class="btn btn-sm" onclick="openModerationSettingsModal()" data-i18n="configure">Configure</button>
-                <button class="btn btn-sm" onclick="openModerationLogicModal()" data-i18n="moderation_logic">Logic</button>
-              </div>
-            </div>
-            <div id="modGeneralSummary"></div>
-          </div>
-
-          <div class="mod-card">
-            <div class="mod-card-head">
-              <div>
-                <div class="mod-card-title" data-i18n="moderation_how_it_works">How it works</div>
-                <div class="mod-card-subtitle">From message to local rule, action, and log.</div>
-              </div>
-              <button class="btn btn-sm" onclick="openModerationLogicModal()" data-i18n="details">Details</button>
-            </div>
-            <div class="mod-flow" id="modPipelineFlow"></div>
-          </div>
-        </div>
-
-        <div class="mod-card">
-          <div class="mod-card-head">
-            <div>
-              <div class="mod-card-title" data-i18n="moderation_rules">Rules</div>
-              <div class="mod-card-subtitle" id="modRulesSummary"></div>
-            </div>
-            <button class="btn btn-primary btn-sm" onclick="showModRuleForm()" data-i18n="moderation_new_rule">New rule</button>
-          </div>
-          <div class="mod-toolbar">
-            <input id="modRuleSearch" placeholder="pattern / notes" oninput="modRulesPage=1;renderModerationRules()">
-            <select id="modRuleFilterScope" onchange="modRulesPage=1;renderModerationRules()"><option value="">scope</option><option value="global">global</option><option value="chat">chat</option></select>
-            <select id="modRuleFilterEnabled" onchange="modRulesPage=1;renderModerationRules()"><option value="">enabled</option><option value="true">enabled</option><option value="false">disabled</option></select>
-            <select id="modRuleFilterCategory" onchange="modRulesPage=1;renderModerationRules()"><option value="">category</option></select>
-            <select id="modRuleFilterSeverity" onchange="modRulesPage=1;renderModerationRules()"><option value="">severity</option><option>none</option><option>low</option><option>medium</option><option>high</option></select>
-            <select id="modRuleFilterMode" onchange="modRulesPage=1;renderModerationRules()"><option value="">mode</option><option>allow</option><option>soft</option><option>hard</option></select>
-            <select id="modRuleFilterSource" onchange="modRulesPage=1;renderModerationRules()"><option value="">source category</option></select>
-          </div>
-          <div id="modRules" class="mod-list"></div>
-        </div>
 
         <div class="mod-card" style="display:none">
           <div class="mod-card-head">
@@ -5372,7 +5317,365 @@ function appendLogEntry(entry) {
 function clearLogsView() {
   document.getElementById('logsContainer').innerHTML = '';
 }
+
+// ===== MODERATION: CATEGORY UI =====
+
+let modCategoriesCache = [];
+let modCurrentCategory = null;
+let modCurrentCategoryRules = [];
+
+function modRestrictFields() {
+  return [
+    ['new_member_can_send_messages', 'modNmNoMessages'],
+    ['new_member_can_send_audios', 'modNmNoAudios'],
+    ['new_member_can_send_documents', 'modNmNoDocuments'],
+    ['new_member_can_send_photos', 'modNmNoPhotos'],
+    ['new_member_can_send_videos', 'modNmNoVideos'],
+    ['new_member_can_send_video_notes', 'modNmNoVideoNotes'],
+    ['new_member_can_send_voice_notes', 'modNmNoVoiceNotes'],
+    ['new_member_can_send_other_messages', 'modNmNoOther'],
+    ['new_member_can_add_web_page_previews', 'modNmNoPreview'],
+    ['new_member_can_send_polls', 'modNmNoPolls'],
+    ['new_member_can_invite_users', 'modNmNoInvite'],
+    ['new_member_can_pin_messages', 'modNmNoPin'],
+    ['new_member_can_change_info', 'modNmNoInfo'],
+    ['new_member_can_manage_topics', 'modNmNoTopics']
+  ];
+}
+
+function newMemberHasRestrictions(cfg) {
+  return !!cfg.new_member_mute_enabled;
+}
+
+function categoryActionText(c) {
+  const parts = [];
+  if (c.alert_enabled) parts.push('логи');
+  if (c.mute_minutes > 0) parts.push(`мьют ${c.mute_minutes} мин`);
+  if (c.ban_hours > 0) parts.push(`бан ${c.ban_hours} ч`);
+  return parts.join(', ') || 'без действий';
+}
+
+async function loadModeration() {
+  if (!currentBotID || !currentChat) return;
+  await loadModerationConfig();
+  await Promise.all([loadModerationCategories(), loadModerationEvents()]);
+  renderModerationOverview();
+}
+
+async function loadModerationConfig() {
+  const cfg = await api(`/api/moderation/config?bot_id=${currentBotID}&chat_id=${currentChat.id}`);
+  modConfigCache = cfg;
+  try {
+    modAlertChatsCache = await api(`/api/moderation/alert-chats?bot_id=${currentBotID}`);
+  } catch(e) {
+    modAlertChatsCache = [];
+  }
+  renderModerationOverview();
+}
+
+async function loadModerationCategories() {
+  modCategoriesCache = await api(`/api/moderation/categories?bot_id=${currentBotID}&chat_id=${currentChat.id}`);
+}
+
+function renderModerationOverview() {
+  if (!currentChat) return;
+  const cfg = modConfigCache || {};
+  const filterOn = cfg.rules_enabled !== false;
+  const newUsersOn = newMemberHasRestrictions(cfg);
+  const dash = document.getElementById('modDashboard');
+  if (!dash) return;
+  dash.innerHTML = `
+    <div class="mod-item">
+      <div class="mod-item-main">
+        <div>
+          <div class="mod-item-title">Статус</div>
+          <div class="mod-meta" style="margin-top:6px">${modBadge(cfg.enabled ? 'ON' : 'OFF', cfg.enabled ? 'clean' : 'status-error')}</div>
+        </div>
+        <button class="btn btn-sm ${cfg.enabled ? 'btn-danger' : 'btn-primary'}" onclick="toggleModerationGroup()">${cfg.enabled ? 'Отключить модерацию группы' : 'Включить модерацию группы'}</button>
+      </div>
+    </div>
+    <div class="mod-item" onclick="if(!event.target.closest('button'))openNewMemberModal()">
+      <div class="mod-item-main">
+        <div>
+          <div class="mod-item-title">Новые пользователи</div>
+          <div class="mod-item-note">${newUsersOn ? 'Ограничения включены' : 'Ограничений нет'}</div>
+        </div>
+        ${modBadge(newUsersOn ? 'ON' : 'OFF', newUsersOn ? 'clean' : 'status-skipped')}
+      </div>
+    </div>
+    <div class="mod-item" onclick="if(!event.target.closest('button'))openFilterModal()">
+      <div class="mod-item-main">
+        <div>
+          <div class="mod-item-title">Фильтр</div>
+          <div class="mod-item-note">${filterOn ? 'Включен' : 'Выключен'} · ${modCategoriesCache.length} категорий</div>
+        </div>
+        ${modBadge(filterOn ? 'Включен' : 'Выключен', filterOn ? 'clean' : 'status-error')}
+      </div>
+    </div>`;
+}
+
+async function saveModerationConfigPatch(patch) {
+  const body = {
+    ...(modConfigCache || {}),
+    bot_id: currentBotID,
+    chat_id: currentChat.id,
+    skip_bot_messages: modConfigCache?.skip_bot_messages !== false,
+    include_context: modConfigCache?.include_context !== false,
+    context_messages_limit: modConfigCache?.context_messages_limit || 30,
+    context_minutes: modConfigCache?.context_minutes || 30,
+    rules_enabled: modConfigCache?.rules_enabled !== false,
+    ai_level2_enabled: false,
+    ai_level2_provider_id: 0,
+    ai_level2_min_interval_seconds: 3600,
+    ai_level2_context_minutes: 60,
+    log_clean_messages: !!modConfigCache?.log_clean_messages,
+    max_text_length_for_ai: 4000,
+    new_member_mute_seconds: modConfigCache?.new_member_mute_seconds || 300,
+    ...patch
+  };
+  await api('/api/moderation/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  modConfigCache = body;
+  renderModerationOverview();
+}
+
+async function toggleModerationGroup() {
+  await saveModerationConfigPatch({enabled: !modConfigCache?.enabled});
+  toast(t('saved'));
+}
+
+function openNewMemberModal() {
+  const cfg = modConfigCache || {};
+  modRestrictFields().forEach(([field, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = !cfg[field];
+  });
+  const seconds = cfg.new_member_mute_seconds || 300;
+  const value = document.getElementById('modNmDurationValue');
+  const unit = document.getElementById('modNmDurationUnit');
+  if (seconds % 86400 === 0) { value.value = seconds / 86400; unit.value = 'days'; }
+  else if (seconds % 3600 === 0) { value.value = seconds / 3600; unit.value = 'hours'; }
+  else if (seconds % 60 === 0) { value.value = seconds / 60; unit.value = 'minutes'; }
+  else { value.value = seconds; unit.value = 'seconds'; }
+  document.getElementById('modNewMembersModal').style.display = 'flex';
+}
+
+function closeNewMemberModal() {
+  document.getElementById('modNewMembersModal').style.display = 'none';
+}
+
+async function saveNewMemberRestrictions() {
+  const patch = {};
+  let anyRestriction = false;
+  modRestrictFields().forEach(([field, id]) => {
+    const denied = !!document.getElementById(id)?.checked;
+    if (denied) anyRestriction = true;
+    patch[field] = !denied;
+  });
+  const n = parseInt(document.getElementById('modNmDurationValue').value || '0');
+  const unit = document.getElementById('modNmDurationUnit').value;
+  const mult = unit === 'days' ? 86400 : unit === 'hours' ? 3600 : unit === 'minutes' ? 60 : 1;
+  patch.new_member_mute_enabled = anyRestriction;
+  patch.new_member_mute_seconds = Math.max(0, n * mult);
+  await saveModerationConfigPatch(patch);
+  closeNewMemberModal();
+  toast(t('saved'));
+}
+
+function openFilterModal() {
+  renderFilterModal();
+  document.getElementById('modFilterModal').style.display = 'flex';
+}
+
+function closeFilterModal() {
+  document.getElementById('modFilterModal').style.display = 'none';
+}
+
+async function toggleModerationFilter() {
+  await saveModerationConfigPatch({rules_enabled: modConfigCache?.rules_enabled === false});
+  toast(t('saved'));
+  renderFilterModal();
+}
+
+function renderFilterModal() {
+  const list = document.getElementById('modCategoryList');
+  const filterOn = modConfigCache?.rules_enabled !== false;
+  document.getElementById('modFilterStatusText').innerHTML = modBadge(filterOn ? 'Включен' : 'Выключен', filterOn ? 'clean' : 'status-error');
+  list.innerHTML = modCategoriesCache.map(c => `
+    <div class="mod-item" onclick="openCategoryModal('${escAttr(c.category_key)}')">
+      <div class="mod-item-main">
+        <div>
+          <div class="mod-item-title">${esc(c.display_name || c.category_key)}</div>
+          <div class="mod-item-note">${c.enabled ? 'категория включена' : 'категория выключена'} · ${categoryActionText(c)} · правил: ${c.enabled_rules}/${c.rules_count}</div>
+        </div>
+        ${modBadge(c.enabled ? 'ON' : 'OFF', c.enabled ? 'clean' : 'status-skipped')}
+      </div>
+    </div>`).join('') || `<div class="mod-empty"><div class="mod-empty-title">Категорий нет</div></div>`;
+}
+
+function escAttr(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+async function openCategoryModal(key) {
+  modCurrentCategory = modCategoriesCache.find(c => c.category_key === key) || {category_key:key, display_name:key, enabled:true};
+  modCurrentCategoryRules = await api(`/api/moderation/categories/rules?bot_id=${currentBotID}&chat_id=${currentChat.id}&category=${encodeURIComponent(key)}`);
+  document.getElementById('modCategoryTitle').textContent = modCurrentCategory.display_name || key;
+  document.getElementById('modCategoryEnabled').checked = modCurrentCategory.enabled !== false;
+  document.getElementById('modCategoryAlertEnabled').checked = !!modCurrentCategory.alert_enabled;
+  document.getElementById('modCategoryMuteMinutes').value = modCurrentCategory.mute_minutes || 0;
+  document.getElementById('modCategoryBanHours').value = modCurrentCategory.ban_hours || 0;
+  const alertSel = document.getElementById('modCategoryAlertChat');
+  alertSel.innerHTML = `<option value="0">${t('none')}</option>` + (modAlertChatsCache || []).map(c => `<option value="${c.id}">${esc(c.title || c.username || String(c.id))} / ${c.id}</option>`).join('');
+  alertSel.value = String(modConfigCache?.alert_chat_id || 0);
+  document.getElementById('modCategoryRulesText').value = modCurrentCategoryRules.map(r => r.pattern || '').join('\n');
+  closeFilterModal();
+  document.getElementById('modCategoryModal').style.display = 'flex';
+}
+
+function closeCategoryModal() {
+  document.getElementById('modCategoryModal').style.display = 'none';
+}
+
+async function saveCategoryModal() {
+  const key = modCurrentCategory.category_key;
+  const setting = {
+    bot_id: currentBotID,
+    chat_id: currentChat.id,
+    category_key: key,
+    enabled: document.getElementById('modCategoryEnabled').checked,
+    alert_enabled: document.getElementById('modCategoryAlertEnabled').checked,
+    mute_minutes: parseInt(document.getElementById('modCategoryMuteMinutes').value || '0'),
+    ban_hours: parseInt(document.getElementById('modCategoryBanHours').value || '0')
+  };
+  const alertChat = parseInt(document.getElementById('modCategoryAlertChat').value || '0');
+  if (alertChat !== (modConfigCache?.alert_chat_id || 0)) {
+    await saveModerationConfigPatch({alert_chat_id: alertChat});
+  }
+  const existingPatterns = new Set((modCurrentCategoryRules || []).map(r => r.pattern));
+  const template = (modCurrentCategoryRules || [])[0] || {language:'ru', kind:'phrase', category:'other', severity:'medium', confidence:0.78, mode:'soft', action:'none'};
+  const rules = document.getElementById('modCategoryRulesText').value.split('\n').map(s => s.trim()).filter(Boolean).filter(p => !existingPatterns.has(p)).map(pattern => ({
+    bot_id: currentBotID,
+    chat_id: currentChat.id,
+    enabled: true,
+    language: template.language || 'ru',
+    kind: pattern.includes('(?') || pattern.includes('\\') ? 'regex' : 'phrase',
+    pattern,
+    category: template.category || 'other',
+    severity: template.severity || 'medium',
+    confidence: template.confidence || 0.78,
+    action: 'none',
+    duration_seconds: 0,
+    mode: 'soft',
+    notes: `custom-category-rule; source_category=${key}`
+  }));
+  await api('/api/moderation/categories/rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({setting, rules})});
+  await loadModerationCategories();
+  closeCategoryModal();
+  renderModerationOverview();
+  toast(t('saved'));
+}
 </script>
+
+<!-- New Member Restrictions Modal -->
+<div id="modNewMembersModal" class="modal-overlay mod-modal" style="display:none" onclick="if(event.target===this)closeNewMemberModal()">
+  <div class="modal">
+    <div class="profile-header">
+      <div class="profile-avatar">N</div>
+      <div class="profile-identity">
+        <div class="profile-name">Новые пользователи</div>
+        <div class="profile-id">Ограничения применяются к новым участникам группы.</div>
+      </div>
+    </div>
+    <div class="profile-section">
+      <div class="profile-section-title">Ограничения</div>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoMessages"> <span>Нельзя отправлять сообщения</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoAudios"> <span>Нельзя отправлять аудио</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoDocuments"> <span>Нельзя отправлять документы</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPhotos"> <span>Нельзя отправлять фото</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoVideos"> <span>Нельзя отправлять видео</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoVideoNotes"> <span>Нельзя отправлять видеозаметки</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoVoiceNotes"> <span>Нельзя отправлять голосовые заметки</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoOther"> <span>Нельзя отправлять другие сообщения</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPreview"> <span>Нельзя добавлять превью веб-страниц</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPolls"> <span>Нельзя отправлять опросы</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoInvite"> <span>Нельзя приглашать пользователей</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPin"> <span>Нельзя закреплять сообщения</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoInfo"> <span>Нельзя изменять информацию чата</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoTopics"> <span>Нельзя управлять темами</span></label>
+    </div>
+    <div class="profile-section">
+      <div class="profile-section-title">Срок ограничения</div>
+      <div class="mod-form-grid">
+        <div class="mod-field"><label>Срок</label><input id="modNmDurationValue" type="number" min="0" value="5"></div>
+        <div class="mod-field"><label>Единица</label><select id="modNmDurationUnit"><option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option></select></div>
+      </div>
+      <div class="hint" style="margin-top:10px">Менее 40 секунд или 0 — бессрочно. Бот должен быть администратором с правом ограничивать участников.</div>
+    </div>
+    <div class="mod-modal-footer">
+      <span></span>
+      <div class="mod-modal-footer-right">
+        <button class="btn" onclick="closeNewMemberModal()" data-i18n="cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveNewMemberRestrictions()" data-i18n="save">SAVE</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Moderation Filter Modal -->
+<div id="modFilterModal" class="modal-overlay mod-modal mod-modal-wide" style="display:none" onclick="if(event.target===this)closeFilterModal()">
+  <div class="modal">
+    <div class="profile-header">
+      <div class="profile-avatar">F</div>
+      <div class="profile-identity">
+        <div class="profile-name">Фильтр</div>
+        <div class="profile-id" id="modFilterStatusText"></div>
+      </div>
+    </div>
+    <div class="mod-card-actions" style="justify-content:flex-end;margin-bottom:12px">
+      <button class="btn btn-sm" onclick="toggleModerationFilter()">Включить / выключить фильтр</button>
+    </div>
+    <div id="modCategoryList" class="mod-list"></div>
+    <div class="mod-modal-footer">
+      <span></span>
+      <button class="btn" onclick="closeFilterModal()" data-i18n="close">CLOSE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Moderation Category Modal -->
+<div id="modCategoryModal" class="modal-overlay mod-modal mod-modal-wide" style="display:none" onclick="if(event.target===this)closeCategoryModal()">
+  <div class="modal">
+    <div class="profile-header">
+      <div class="profile-avatar">C</div>
+      <div class="profile-identity">
+        <div class="profile-name" id="modCategoryTitle">Категория</div>
+        <div class="profile-id">Общие настройки применяются ко всем словам и выражениям категории.</div>
+      </div>
+    </div>
+    <div class="profile-section">
+      <div class="profile-section-title">Настройки категории</div>
+      <label class="modal-perm"><input type="checkbox" id="modCategoryEnabled"> <span>Категория включена</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modCategoryAlertEnabled"> <span>Направлять в чат с логами</span></label>
+      <div class="mod-form-grid">
+        <div class="mod-field"><label>Чат с логами</label><select id="modCategoryAlertChat"></select></div>
+        <div class="mod-field"><label>Мьют на минут</label><input id="modCategoryMuteMinutes" type="number" min="0"></div>
+        <div class="mod-field"><label>Бан на часов</label><input id="modCategoryBanHours" type="number" min="0"></div>
+      </div>
+    </div>
+    <div class="profile-section">
+      <div class="profile-section-title">Слова и выражения</div>
+      <textarea id="modCategoryRulesText" style="width:100%;min-height:240px;resize:vertical"></textarea>
+      <div class="hint" style="margin-top:8px">Каждая строка — отдельное выражение. Глобальные зашитые правила отображаются здесь; новые строки будут добавлены как правила этой группы.</div>
+    </div>
+    <div class="mod-modal-footer">
+      <button class="btn" onclick="closeCategoryModal()" data-i18n="cancel">Cancel</button>
+      <div class="mod-modal-footer-right">
+        <button class="btn" onclick="closeCategoryModal();openFilterModal()">К списку</button>
+        <button class="btn btn-primary" onclick="saveCategoryModal()" data-i18n="save">SAVE</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Moderation Settings Modal -->
 <div id="modSettingsModal" class="modal-overlay mod-modal" style="display:none" onclick="if(event.target===this)closeModerationSettingsModal()">

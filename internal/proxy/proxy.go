@@ -686,6 +686,7 @@ func (pm *Manager) applyNewMemberMute(botID int64, rawUpdate map[string]any) {
 		return
 	}
 	duration := moderation.NormalizeMuteDurationSeconds(cfg.NewMemberMuteSeconds)
+	permissions := newMemberPermissions(cfg)
 	pm.mu.Lock()
 	b := pm.managedBots[botID]
 	pm.mu.Unlock()
@@ -736,7 +737,7 @@ func (pm *Manager) applyNewMemberMute(botID int64, rawUpdate map[string]any) {
 		if !created {
 			continue
 		}
-		if err := b.MuteUser(chatID, userID, until); err != nil {
+		if err := b.RestrictUser(chatID, userID, until, permissions); err != nil {
 			event.Status = "error"
 			event.ActionError = err.Error()
 			log.Printf("[moderation] new member mute failed chat=%d user=%d: %v", chatID, userID, err)
@@ -744,6 +745,25 @@ func (pm *Manager) applyNewMemberMute(botID int64, rawUpdate map[string]any) {
 			log.Printf("[moderation] new member muted chat=%d user=%d duration=%ds", chatID, userID, duration)
 		}
 		_ = pm.store.UpdateModerationEvent(event)
+	}
+}
+
+func newMemberPermissions(cfg *models.ModerationChatConfig) map[string]bool {
+	return map[string]bool{
+		"can_send_messages":         cfg.NewMemberCanSendMessages,
+		"can_send_audios":           cfg.NewMemberCanSendAudios,
+		"can_send_documents":        cfg.NewMemberCanSendDocuments,
+		"can_send_photos":           cfg.NewMemberCanSendPhotos,
+		"can_send_videos":           cfg.NewMemberCanSendVideos,
+		"can_send_video_notes":      cfg.NewMemberCanSendVideoNotes,
+		"can_send_voice_notes":      cfg.NewMemberCanSendVoiceNotes,
+		"can_send_other_messages":   cfg.NewMemberCanSendOther,
+		"can_add_web_page_previews": cfg.NewMemberCanAddWebPreviews,
+		"can_send_polls":            cfg.NewMemberCanSendPolls,
+		"can_invite_users":          cfg.NewMemberCanInviteUsers,
+		"can_pin_messages":          cfg.NewMemberCanPinMessages,
+		"can_change_info":           cfg.NewMemberCanChangeInfo,
+		"can_manage_topics":         cfg.NewMemberCanManageTopics,
 	}
 }
 

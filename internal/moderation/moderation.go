@@ -74,6 +74,21 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 		return
 	}
 	prefilter := EvaluateRules(msg.Text, rules)
+	categorySetting := s.categorySettingForResult(msg, prefilter)
+	if categorySetting != nil && !categorySetting.Enabled && (prefilter.Decision == "soft_match" || prefilter.Decision == "hard_match") {
+		event.Status = "skipped"
+		event.FinalToxic = false
+		event.FinalSeverity = "none"
+		event.FinalCategory = prefilter.Category
+		event.FinalConfidence = prefilter.Confidence
+		event.FinalReason = "moderation category disabled"
+		_ = s.saveLevel1Result(eventID, prefilter)
+		_ = s.store.UpdateModerationEvent(event)
+		return
+	}
+	if categorySetting != nil {
+		applyCategoryAction(&prefilter, *categorySetting)
+	}
 	if prefilter.Decision == "clean" || prefilter.Decision == "allowed" {
 		event.FinalToxic = false
 		event.FinalSeverity = "none"
@@ -102,7 +117,7 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 	event.Status = "flagged"
 
 	hardLevel := actionLevelFromPrefilter(prefilter)
-	if prefilter.Decision == "hard_match" && hardLevel.Action != "" && hardLevel.Action != "none" {
+	if hardLevel.Action != "" && hardLevel.Action != "none" {
 		event.FinalAction = hardLevel.Action
 		results, _ := s.store.GetModerationLevelResults(eventID)
 		if err := s.applyAction(cfg, msg, &event, hardLevel, results, bot); err != nil {
@@ -120,6 +135,57 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 
 func (s *Service) TestClassify(ctx context.Context, req models.ModerationTestRequest) (*models.ModerationTestResponse, error) {
 	return nil, fmt.Errorf("AI moderation classification is disabled in minimal moderation mode")
+}
+
+func (s *Service) categorySettingForResult(msg Message, result models.ModerationPrefilterResult) *models.ModerationCategorySetting {
+	if len(result.MatchedRules) == 0 {
+		return nil
+	}
+	key := categoryKeyFromMatch(result.MatchedRules[0])
+	for _, m := range result.MatchedRules {
+		if m.Category == result.Category {
+			key = categoryKeyFromMatch(m)
+			break
+		}
+	}
+	setting, err := s.store.GetModerationCategorySetting(msg.BotID, msg.ChatID, key)
+	if err != nil {
+		log.Printf("[moderation] category setting load failed bot=%d chat=%d category=%s: %v", msg.BotID, msg.ChatID, key, err)
+		return nil
+	}
+	if setting.ID == 0 {
+		return nil
+	}
+	return setting
+}
+
+func categoryKeyFromMatch(m models.ModerationRuleMatch) string {
+	for _, part := range strings.Split(m.Notes, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "source_category=") {
+			return strings.TrimSpace(strings.TrimPrefix(part, "source_category="))
+		}
+	}
+	if m.Category != "" {
+		return m.Category
+	}
+	return "other"
+}
+
+func applyCategoryAction(result *models.ModerationPrefilterResult, setting models.ModerationCategorySetting) {
+	result.Action = "none"
+	result.DurationSeconds = 0
+	if setting.AlertEnabled {
+		result.Action = "alert"
+	}
+	if setting.MuteMinutes > 0 {
+		result.Action = "mute"
+		result.DurationSeconds = setting.MuteMinutes * 60
+	}
+	if setting.BanHours > 0 {
+		result.Action = "ban"
+		result.DurationSeconds = setting.BanHours * 3600
+	}
 }
 
 func (s *Service) TestRules(req models.ModerationRuleTestRequest) (*models.ModerationRuleTestResponse, error) {
@@ -444,7 +510,20 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 		event.ActionDurationSeconds = duration
 		event.ActionResult = fmt.Sprintf("muted in source chat for %ds", duration)
 	case "ban":
-		return fmt.Errorf("ban action is disabled in minimal moderation mode")
+		duration := level.DurationSeconds
+		var until int64
+		if duration > 0 {
+			until = time.Now().Add(time.Duration(duration) * time.Second).Unix()
+		}
+		if err := bot.BanUserUntil(msg.ChatID, msg.UserID, until); err != nil {
+			return err
+		}
+		event.ActionDurationSeconds = duration
+		if duration > 0 {
+			event.ActionResult = fmt.Sprintf("banned in source chat for %ds", duration)
+		} else {
+			event.ActionResult = "banned in source chat"
+		}
 	}
 	return nil
 }

@@ -315,6 +315,9 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/moderation/rules/delete", s.adminOnly(s.handleModerationRuleDelete))
 	mux.HandleFunc("/api/moderation/rules/bulk-update", s.adminOnly(s.handleModerationRulesBulkUpdate))
 	mux.HandleFunc("/api/moderation/rules/test", s.adminOnly(s.handleModerationRuleTest))
+	mux.HandleFunc("/api/moderation/categories", s.adminOnly(s.handleModerationCategories))
+	mux.HandleFunc("/api/moderation/categories/update", s.adminOnly(s.handleModerationCategoryUpdate))
+	mux.HandleFunc("/api/moderation/categories/rules", s.adminOnly(s.handleModerationCategoryRules))
 	mux.HandleFunc("/api/moderation/levels", s.adminOnly(s.handleModerationLevels))
 	mux.HandleFunc("/api/moderation/levels/update", s.adminOnly(s.handleModerationLevelUpdate))
 	mux.HandleFunc("/api/moderation/events", s.adminOnly(s.handleModerationEvents))
@@ -2095,10 +2098,6 @@ func (s *Server) handleModerationRuleSave(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	if rule.Action == "ban" {
-		writeDisabled(w)
-		return
-	}
 	if err := s.store.SaveModerationRule(rule); err != nil {
 		writeError(w, err)
 		return
@@ -2171,10 +2170,6 @@ func (s *Server) handleModerationRulesBulkUpdate(w http.ResponseWriter, r *http.
 			rule.Mode = *req.Mode
 		}
 		if req.Action != nil {
-			if *req.Action == "ban" {
-				writeDisabled(w)
-				return
-			}
 			rule.Action = *req.Action
 		}
 		if req.DurationSeconds != nil {
@@ -2187,6 +2182,85 @@ func (s *Server) handleModerationRulesBulkUpdate(w http.ResponseWriter, r *http.
 		updated++
 	}
 	writeJSON(w, map[string]any{"status": "ok", "updated": updated})
+}
+
+func (s *Server) handleModerationCategories(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	botID, _ := strconv.ParseInt(q.Get("bot_id"), 10, 64)
+	chatID, _ := strconv.ParseInt(q.Get("chat_id"), 10, 64)
+	cats, err := s.store.ListModerationCategorySettings(botID, chatID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, cats)
+}
+
+func (s *Server) handleModerationCategoryUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	var setting models.ModerationCategorySetting
+	if err := json.NewDecoder(r.Body).Decode(&setting); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.SaveModerationCategorySetting(setting); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleModerationCategoryRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		q := r.URL.Query()
+		botID, _ := strconv.ParseInt(q.Get("bot_id"), 10, 64)
+		chatID, _ := strconv.ParseInt(q.Get("chat_id"), 10, 64)
+		key := q.Get("category")
+		rules, err := s.store.ListModerationRulesByCategory(botID, chatID, key)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if rules == nil {
+			rules = []models.ModerationRule{}
+		}
+		writeJSON(w, rules)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	var req struct {
+		Setting models.ModerationCategorySetting `json:"setting"`
+		Rules   []models.ModerationRule          `json:"rules"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.SaveModerationCategorySetting(req.Setting); err != nil {
+		writeError(w, err)
+		return
+	}
+	for _, rule := range req.Rules {
+		if rule.Pattern == "" {
+			continue
+		}
+		if rule.BotID == 0 && rule.ChatID == 0 {
+			rule.ID = 0
+			rule.BotID = req.Setting.BotID
+			rule.ChatID = req.Setting.ChatID
+		}
+		if err := s.store.SaveModerationRule(rule); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleModerationRuleTest(w http.ResponseWriter, r *http.Request) {

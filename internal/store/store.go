@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"log"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -318,9 +320,36 @@ func (s *Store) migrate() error {
 			max_text_length_for_ai INTEGER NOT NULL DEFAULT 4000,
 			new_member_mute_enabled INTEGER NOT NULL DEFAULT 0,
 			new_member_mute_seconds INTEGER NOT NULL DEFAULT 300,
+			new_member_can_send_messages INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_audios INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_documents INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_photos INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_videos INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_video_notes INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_voice_notes INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_other_messages INTEGER NOT NULL DEFAULT 0,
+			new_member_can_add_web_page_previews INTEGER NOT NULL DEFAULT 0,
+			new_member_can_send_polls INTEGER NOT NULL DEFAULT 0,
+			new_member_can_invite_users INTEGER NOT NULL DEFAULT 0,
+			new_member_can_pin_messages INTEGER NOT NULL DEFAULT 0,
+			new_member_can_change_info INTEGER NOT NULL DEFAULT 0,
+			new_member_can_manage_topics INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL DEFAULT '',
 			UNIQUE(bot_id, chat_id)
+		);
+		CREATE TABLE IF NOT EXISTS moderation_category_settings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bot_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			category_key TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			alert_enabled INTEGER NOT NULL DEFAULT 0,
+			mute_minutes INTEGER NOT NULL DEFAULT 0,
+			ban_hours INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT '',
+			UNIQUE(bot_id, chat_id, category_key)
 		);
 		CREATE TABLE IF NOT EXISTS moderation_rules (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -439,6 +468,20 @@ func (s *Store) migrate() error {
 		{"max_text_length_for_ai", "INTEGER NOT NULL DEFAULT 4000"},
 		{"new_member_mute_enabled", "INTEGER NOT NULL DEFAULT 0"},
 		{"new_member_mute_seconds", "INTEGER NOT NULL DEFAULT 300"},
+		{"new_member_can_send_messages", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_audios", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_documents", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_photos", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_videos", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_video_notes", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_voice_notes", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_other_messages", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_add_web_page_previews", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_send_polls", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_invite_users", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_pin_messages", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_change_info", "INTEGER NOT NULL DEFAULT 0"},
+		{"new_member_can_manage_topics", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		var has int
 		s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('moderation_chat_configs') WHERE name=?`, col.name).Scan(&has)
@@ -1655,18 +1698,41 @@ func (s *Store) insertModerationSeedRule(r models.ModerationRule) error {
 
 func (s *Store) GetModerationChatConfig(botID, chatID int64) (*models.ModerationChatConfig, error) {
 	var c models.ModerationChatConfig
+	var canSendMessages, canSendAudios, canSendDocuments, canSendPhotos, canSendVideos int
+	var canSendVideoNotes, canSendVoiceNotes, canSendOther, canAddWebPreviews int
+	var canSendPolls, canInviteUsers, canPinMessages, canChangeInfo, canManageTopics int
 	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes,
 			rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai,
 			new_member_mute_enabled, new_member_mute_seconds,
+			new_member_can_send_messages, new_member_can_send_audios, new_member_can_send_documents, new_member_can_send_photos, new_member_can_send_videos,
+			new_member_can_send_video_notes, new_member_can_send_voice_notes, new_member_can_send_other_messages, new_member_can_add_web_page_previews,
+			new_member_can_send_polls, new_member_can_invite_users, new_member_can_pin_messages, new_member_can_change_info, new_member_can_manage_topics,
 			created_at, updated_at
 		FROM moderation_chat_configs WHERE bot_id=? AND chat_id=?`, botID, chatID).
 		Scan(&c.ID, &c.BotID, &c.ChatID, &c.Enabled, &c.AlertChatID, &c.SkipBotMessages, &c.IncludeContext, &c.ContextMessagesLimit, &c.ContextMinutes,
 			&c.RulesEnabled, &c.AILevel2Enabled, &c.AILevel2ProviderID, &c.AILevel2MinIntervalSeconds, &c.AILevel2ContextMinutes, &c.AILevel2LastRunAt, &c.LogCleanMessages, &c.MaxTextLengthForAI,
 			&c.NewMemberMuteEnabled, &c.NewMemberMuteSeconds,
+			&canSendMessages, &canSendAudios, &canSendDocuments, &canSendPhotos, &canSendVideos,
+			&canSendVideoNotes, &canSendVoiceNotes, &canSendOther, &canAddWebPreviews,
+			&canSendPolls, &canInviteUsers, &canPinMessages, &canChangeInfo, &canManageTopics,
 			&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	c.NewMemberCanSendMessages = canSendMessages != 0
+	c.NewMemberCanSendAudios = canSendAudios != 0
+	c.NewMemberCanSendDocuments = canSendDocuments != 0
+	c.NewMemberCanSendPhotos = canSendPhotos != 0
+	c.NewMemberCanSendVideos = canSendVideos != 0
+	c.NewMemberCanSendVideoNotes = canSendVideoNotes != 0
+	c.NewMemberCanSendVoiceNotes = canSendVoiceNotes != 0
+	c.NewMemberCanSendOther = canSendOther != 0
+	c.NewMemberCanAddWebPreviews = canAddWebPreviews != 0
+	c.NewMemberCanSendPolls = canSendPolls != 0
+	c.NewMemberCanInviteUsers = canInviteUsers != 0
+	c.NewMemberCanPinMessages = canPinMessages != 0
+	c.NewMemberCanChangeInfo = canChangeInfo != 0
+	c.NewMemberCanManageTopics = canManageTopics != 0
 	normalizeModerationChatConfig(&c)
 	return &c, nil
 }
@@ -1677,8 +1743,12 @@ func (s *Store) SaveModerationChatConfig(c models.ModerationChatConfig) error {
 	_, err := s.db.Exec(`INSERT INTO moderation_chat_configs
 		(bot_id, chat_id, enabled, alert_chat_id, skip_bot_messages, include_context, context_messages_limit, context_minutes,
 		 rules_enabled, ai_level2_enabled, ai_level2_provider_id, ai_level2_min_interval_seconds, ai_level2_context_minutes, ai_level2_last_run_at, log_clean_messages, max_text_length_for_ai,
-		 new_member_mute_enabled, new_member_mute_seconds, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 new_member_mute_enabled, new_member_mute_seconds,
+		 new_member_can_send_messages, new_member_can_send_audios, new_member_can_send_documents, new_member_can_send_photos, new_member_can_send_videos,
+		 new_member_can_send_video_notes, new_member_can_send_voice_notes, new_member_can_send_other_messages, new_member_can_add_web_page_previews,
+		 new_member_can_send_polls, new_member_can_invite_users, new_member_can_pin_messages, new_member_can_change_info, new_member_can_manage_topics,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bot_id, chat_id) DO UPDATE SET
 			enabled=excluded.enabled, alert_chat_id=excluded.alert_chat_id, skip_bot_messages=excluded.skip_bot_messages,
 			include_context=excluded.include_context, context_messages_limit=excluded.context_messages_limit,
@@ -1686,10 +1756,22 @@ func (s *Store) SaveModerationChatConfig(c models.ModerationChatConfig) error {
 			ai_level2_provider_id=excluded.ai_level2_provider_id, ai_level2_min_interval_seconds=excluded.ai_level2_min_interval_seconds,
 			ai_level2_context_minutes=excluded.ai_level2_context_minutes, log_clean_messages=excluded.log_clean_messages,
 			max_text_length_for_ai=excluded.max_text_length_for_ai, new_member_mute_enabled=excluded.new_member_mute_enabled,
-			new_member_mute_seconds=excluded.new_member_mute_seconds, updated_at=excluded.updated_at`,
+			new_member_mute_seconds=excluded.new_member_mute_seconds,
+			new_member_can_send_messages=excluded.new_member_can_send_messages, new_member_can_send_audios=excluded.new_member_can_send_audios,
+			new_member_can_send_documents=excluded.new_member_can_send_documents, new_member_can_send_photos=excluded.new_member_can_send_photos,
+			new_member_can_send_videos=excluded.new_member_can_send_videos, new_member_can_send_video_notes=excluded.new_member_can_send_video_notes,
+			new_member_can_send_voice_notes=excluded.new_member_can_send_voice_notes, new_member_can_send_other_messages=excluded.new_member_can_send_other_messages,
+			new_member_can_add_web_page_previews=excluded.new_member_can_add_web_page_previews, new_member_can_send_polls=excluded.new_member_can_send_polls,
+			new_member_can_invite_users=excluded.new_member_can_invite_users, new_member_can_pin_messages=excluded.new_member_can_pin_messages,
+			new_member_can_change_info=excluded.new_member_can_change_info, new_member_can_manage_topics=excluded.new_member_can_manage_topics,
+			updated_at=excluded.updated_at`,
 		c.BotID, c.ChatID, c.Enabled, c.AlertChatID, c.SkipBotMessages, c.IncludeContext, c.ContextMessagesLimit, c.ContextMinutes,
 		c.RulesEnabled, c.AILevel2Enabled, c.AILevel2ProviderID, c.AILevel2MinIntervalSeconds, c.AILevel2ContextMinutes, c.AILevel2LastRunAt, c.LogCleanMessages, c.MaxTextLengthForAI,
-		c.NewMemberMuteEnabled, c.NewMemberMuteSeconds, now, now)
+		c.NewMemberMuteEnabled, c.NewMemberMuteSeconds,
+		c.NewMemberCanSendMessages, c.NewMemberCanSendAudios, c.NewMemberCanSendDocuments, c.NewMemberCanSendPhotos, c.NewMemberCanSendVideos,
+		c.NewMemberCanSendVideoNotes, c.NewMemberCanSendVoiceNotes, c.NewMemberCanSendOther, c.NewMemberCanAddWebPreviews,
+		c.NewMemberCanSendPolls, c.NewMemberCanInviteUsers, c.NewMemberCanPinMessages, c.NewMemberCanChangeInfo, c.NewMemberCanManageTopics,
+		now, now)
 	return err
 }
 
@@ -1778,6 +1860,166 @@ func (s *Store) SaveModerationRule(r models.ModerationRule) error {
 func (s *Store) DeleteModerationRule(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM moderation_rules WHERE id=?`, id)
 	return err
+}
+
+func ModerationRuleCategoryKey(r models.ModerationRule) string {
+	if key := moderationRuleSourceCategory(r.Notes); key != "" {
+		return key
+	}
+	if r.Category != "" {
+		return r.Category
+	}
+	return "other"
+}
+
+func moderationRuleSourceCategory(notes string) string {
+	for _, part := range strings.Split(notes, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "source_category=") {
+			return strings.TrimSpace(strings.TrimPrefix(part, "source_category="))
+		}
+	}
+	return ""
+}
+
+func (s *Store) ListModerationCategorySettings(botID, chatID int64) ([]models.ModerationCategorySetting, error) {
+	rules, err := s.ListModerationRules(botID, chatID, true)
+	if err != nil {
+		return nil, err
+	}
+	byKey := map[string]*models.ModerationCategorySetting{}
+	severities := map[string]map[string]bool{}
+	for _, r := range rules {
+		key := ModerationRuleCategoryKey(r)
+		if byKey[key] == nil {
+			byKey[key] = &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: true}
+			severities[key] = map[string]bool{}
+		}
+		byKey[key].RulesCount++
+		if r.Enabled {
+			byKey[key].EnabledRules++
+		}
+		if r.Severity != "" {
+			severities[key][r.Severity] = true
+		}
+	}
+	rows, err := s.db.Query(`SELECT id, bot_id, chat_id, category_key, enabled, alert_enabled, mute_minutes, ban_hours, created_at, updated_at
+		FROM moderation_category_settings WHERE bot_id=? AND chat_id=?`, botID, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c models.ModerationCategorySetting
+		if err := rows.Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if existing := byKey[c.CategoryKey]; existing != nil {
+			c.RulesCount = existing.RulesCount
+			c.EnabledRules = existing.EnabledRules
+		}
+		byKey[c.CategoryKey] = &c
+	}
+	out := make([]models.ModerationCategorySetting, 0, len(byKey))
+	for key, c := range byKey {
+		c.DisplayName = ModerationCategoryDisplayName(key)
+		if len(severities[key]) > 0 {
+			var vals []string
+			for v := range severities[key] {
+				vals = append(vals, v)
+			}
+			sort.Strings(vals)
+			c.SeveritySummary = strings.Join(vals, ", ")
+		}
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DisplayName < out[j].DisplayName })
+	return out, nil
+}
+
+func (s *Store) GetModerationCategorySetting(botID, chatID int64, key string) (*models.ModerationCategorySetting, error) {
+	var c models.ModerationCategorySetting
+	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, category_key, enabled, alert_enabled, mute_minutes, ban_hours, created_at, updated_at
+		FROM moderation_category_settings WHERE bot_id=? AND chat_id=? AND category_key=?`, botID, chatID, key).
+		Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: true, DisplayName: ModerationCategoryDisplayName(key)}, nil
+		}
+		return nil, err
+	}
+	c.DisplayName = ModerationCategoryDisplayName(key)
+	return &c, nil
+}
+
+func (s *Store) SaveModerationCategorySetting(c models.ModerationCategorySetting) error {
+	now := time.Now().Format(time.RFC3339)
+	if c.CategoryKey == "" {
+		c.CategoryKey = "other"
+	}
+	if c.MuteMinutes < 0 {
+		c.MuteMinutes = 0
+	}
+	if c.BanHours < 0 {
+		c.BanHours = 0
+	}
+	_, err := s.db.Exec(`INSERT INTO moderation_category_settings
+		(bot_id, chat_id, category_key, enabled, alert_enabled, mute_minutes, ban_hours, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(bot_id, chat_id, category_key) DO UPDATE SET
+			enabled=excluded.enabled, alert_enabled=excluded.alert_enabled, mute_minutes=excluded.mute_minutes,
+			ban_hours=excluded.ban_hours, updated_at=excluded.updated_at`,
+		c.BotID, c.ChatID, c.CategoryKey, c.Enabled, c.AlertEnabled, c.MuteMinutes, c.BanHours, now, now)
+	return err
+}
+
+func (s *Store) ListModerationRulesByCategory(botID, chatID int64, key string) ([]models.ModerationRule, error) {
+	rules, err := s.ListModerationRules(botID, chatID, true)
+	if err != nil {
+		return nil, err
+	}
+	out := []models.ModerationRule{}
+	for _, r := range rules {
+		if ModerationRuleCategoryKey(r) == key {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func ModerationCategoryDisplayName(key string) string {
+	switch key {
+	case "spam_ads":
+		return "Реклама и спам"
+	case "phishing_scam":
+		return "Фишинг и мошенничество"
+	case "profanity_ru":
+		return "Русская ненормативная лексика"
+	case "cyber_abuse":
+		return "Киберзлоупотребления"
+	case "evasion_meta":
+		return "Обход модерации"
+	case "insult":
+		return "Оскорбления"
+	case "harassment":
+		return "Травля"
+	case "threat":
+		return "Угрозы"
+	case "hate":
+		return "Ненависть"
+	case "sexual":
+		return "Сексуальный контент"
+	case "spam":
+		return "Спам"
+	case "profanity":
+		return "Ненормативная лексика"
+	case "other":
+		return "Другое"
+	case "none":
+		return "Без категории"
+	default:
+		return key
+	}
 }
 
 func normalizeModerationRule(r *models.ModerationRule) {

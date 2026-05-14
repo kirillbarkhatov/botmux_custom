@@ -592,6 +592,18 @@ func (b *Bot) MuteUser(chatID int64, userID int64, untilUnix int64) error {
 	return b.rawTelegramRequest("restrictChatMember", body)
 }
 
+func (b *Bot) RestrictUser(chatID int64, userID int64, untilUnix int64, permissions map[string]bool) error {
+	body := map[string]any{
+		"chat_id":     chatID,
+		"user_id":     userID,
+		"permissions": permissions,
+	}
+	if untilUnix > 0 {
+		body["until_date"] = untilUnix
+	}
+	return b.rawTelegramRequest("restrictChatMember", body)
+}
+
 func (b *Bot) rawTelegramRequest(method string, payload map[string]any) error {
 	base := b.baseURL
 	if base == "" {

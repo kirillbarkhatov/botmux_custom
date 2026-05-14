@@ -198,8 +198,39 @@ type ModerationChatConfig struct {
 	MaxTextLengthForAI         int    `json:"max_text_length_for_ai"`
 	NewMemberMuteEnabled       bool   `json:"new_member_mute_enabled"`
 	NewMemberMuteSeconds       int64  `json:"new_member_mute_seconds"`
+	NewMemberCanSendMessages   bool   `json:"new_member_can_send_messages"`
+	NewMemberCanSendAudios     bool   `json:"new_member_can_send_audios"`
+	NewMemberCanSendDocuments  bool   `json:"new_member_can_send_documents"`
+	NewMemberCanSendPhotos     bool   `json:"new_member_can_send_photos"`
+	NewMemberCanSendVideos     bool   `json:"new_member_can_send_videos"`
+	NewMemberCanSendVideoNotes bool   `json:"new_member_can_send_video_notes"`
+	NewMemberCanSendVoiceNotes bool   `json:"new_member_can_send_voice_notes"`
+	NewMemberCanSendOther      bool   `json:"new_member_can_send_other_messages"`
+	NewMemberCanAddWebPreviews bool   `json:"new_member_can_add_web_page_previews"`
+	NewMemberCanSendPolls      bool   `json:"new_member_can_send_polls"`
+	NewMemberCanInviteUsers    bool   `json:"new_member_can_invite_users"`
+	NewMemberCanPinMessages    bool   `json:"new_member_can_pin_messages"`
+	NewMemberCanChangeInfo     bool   `json:"new_member_can_change_info"`
+	NewMemberCanManageTopics   bool   `json:"new_member_can_manage_topics"`
 	CreatedAt                  string `json:"created_at"`
 	UpdatedAt                  string `json:"updated_at"`
+}
+
+type ModerationCategorySetting struct {
+	ID              int64  `json:"id"`
+	BotID           int64  `json:"bot_id"`
+	ChatID          int64  `json:"chat_id"`
+	CategoryKey     string `json:"category_key"`
+	Enabled         bool   `json:"enabled"`
+	AlertEnabled    bool   `json:"alert_enabled"`
+	MuteMinutes     int64  `json:"mute_minutes"`
+	BanHours        int64  `json:"ban_hours"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+	RulesCount      int    `json:"rules_count,omitempty"`
+	EnabledRules    int    `json:"enabled_rules,omitempty"`
+	DisplayName     string `json:"display_name,omitempty"`
+	SeveritySummary string `json:"severity_summary,omitempty"`
 }
 
 type ModerationRule struct {

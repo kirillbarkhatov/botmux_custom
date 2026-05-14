@@ -65,10 +65,10 @@ func makeNewMemberUpdate(updateID int, chatID int64, members ...map[string]any) 
 	return map[string]any{
 		"update_id": float64(updateID),
 		"message": map[string]any{
-			"message_id": float64(updateID * 10),
-			"date":       float64(1700000000 + updateID),
-			"chat":       map[string]any{"id": float64(chatID), "type": "supergroup", "title": "Source"},
-			"from":       map[string]any{"id": float64(1), "is_bot": false, "username": "inviter"},
+			"message_id":       float64(updateID * 10),
+			"date":             float64(1700000000 + updateID),
+			"chat":             map[string]any{"id": float64(chatID), "type": "supergroup", "title": "Source"},
+			"from":             map[string]any{"id": float64(1), "is_bot": false, "username": "inviter"},
 			"new_chat_members": list,
 		},
 	}
@@ -198,7 +198,7 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 	})
 
-	t.Run("ban action disabled in minimal mode", func(t *testing.T) {
+	t.Run("ban action targets source chat", func(t *testing.T) {
 		h := setupE2E(t)
 		llm := newFakeLLM(t)
 		llm.SetNextRoute(toxicVerdict())
@@ -209,8 +209,26 @@ func TestE2E_Moderation(t *testing.T) {
 		}
 		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 300, Enabled: true, Kind: "keyword", Pattern: "bad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "hard", Action: "ban", DurationSeconds: 3600})
 		h.InjectUpdate(botID, makeTextUpdate(6, 300, 66, "ban_me", "bad"))
-		if got := len(h.fake.RequestsFor("banChatMember")); got != 0 {
-			t.Fatalf("expected no ban request in minimal mode, got %d", got)
+		reqs := h.fake.RequestsFor("banChatMember")
+		if len(reqs) != 1 || requestJSONInt(reqs[0].body, "chat_id") != 300 || requestJSONInt(reqs[0].body, "user_id") != 66 {
+			t.Fatalf("expected ban in source chat 300 for user 66, got %+v", reqs)
+		}
+	})
+
+	t.Run("category setting overrides rule action", func(t *testing.T) {
+		h := setupE2E(t)
+		botID := registerAndManage(h, "mod10:token", "modbot10")
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 1000, Enabled: true, AlertChatID: 0, SkipBotMessages: true, IncludeContext: true}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 1000, CategoryKey: "harassment", Enabled: true, MuteMinutes: 15}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting: %v", err)
+		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 1000, Enabled: true, Kind: "keyword", Pattern: "categorybad", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "soft", Action: "none"})
+		h.InjectUpdate(botID, makeTextUpdate(10, 1000, 77, "cat_user", "categorybad"))
+		reqs := h.fake.RequestsFor("restrictChatMember")
+		if len(reqs) != 1 || requestJSONInt(reqs[0].body, "chat_id") != 1000 || requestJSONInt(reqs[0].body, "user_id") != 77 {
+			t.Fatalf("expected category mute in source chat 1000 for user 77, got %+v", reqs)
 		}
 	})
 
