@@ -615,27 +615,183 @@ func isAdmin(bot ActionBot, chatID, userID int64) bool {
 	return false
 }
 
-func formatAlert(cfg *models.ModerationChatConfig, msg Message, event *models.ModerationEvent, level models.ModerationChatLevel, results []models.ModerationLevelResult) string {
-	var b strings.Builder
-	b.WriteString("🚨 <b>Moderation alert</b>\n\n")
-	b.WriteString(fmt.Sprintf("Severity: <b>%s</b>\n", html.EscapeString(strings.ToUpper(event.FinalSeverity))))
-	b.WriteString(fmt.Sprintf("Category: %s\n", html.EscapeString(event.FinalCategory)))
-	b.WriteString(fmt.Sprintf("Action: %s\n", html.EscapeString(level.Action)))
-	b.WriteString(fmt.Sprintf("Confidence: %.2f\n", event.FinalConfidence))
-	b.WriteString(fmt.Sprintf("Reason: %s\n\n", html.EscapeString(event.FinalReason)))
-	b.WriteString(fmt.Sprintf("Source chat: %s (%d)\n", html.EscapeString(msg.ChatTitle), msg.ChatID))
-	b.WriteString(fmt.Sprintf("Alert chat: %d\n", cfg.AlertChatID))
-	b.WriteString(fmt.Sprintf("User: %s (%d)\n", html.EscapeString(msg.Username), msg.UserID))
-	b.WriteString(fmt.Sprintf("Message ID: %d\n\n", msg.MessageID))
-	b.WriteString("Message:\n<pre>")
-	b.WriteString(html.EscapeString(truncate(msg.Text, 2500)))
-	b.WriteString("</pre>\n\nLevel results:\n")
-	for _, r := range results {
-		if r.Error != "" {
-			b.WriteString(fmt.Sprintf("L%d %s: error=%s\n", r.Level, html.EscapeString(r.Model), html.EscapeString(r.Error)))
-			continue
+func moderationSeverityLabelRU(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "low":
+		return "Низкая"
+	case "medium":
+		return "Средняя"
+	case "high":
+		return "Высокая"
+	case "none", "":
+		return "Нет"
+	default:
+		return severity
+	}
+}
+
+func moderationAlertStatusRU(event *models.ModerationEvent) string {
+	if strings.TrimSpace(event.ActionError) != "" {
+		return "Ошибка"
+	}
+	switch event.Status {
+	case "action_taken":
+		return "Действие выполнено"
+	case "error":
+		return "Ошибка"
+	case "skipped":
+		return "Пропущено"
+	case "flagged":
+		// Алерт уходит до финального обновления статуса в БД — по смыслу это уже сработавшее правило.
+		return "Действие выполнено"
+	case "ok":
+		return "ОК"
+	default:
+		if event.Status != "" {
+			return event.Status
 		}
-		b.WriteString(fmt.Sprintf("L%d %s: toxic=%v severity=%s confidence=%.2f\n", r.Level, html.EscapeString(r.Model), r.Toxic, html.EscapeString(r.Severity), r.Confidence))
+		return "Действие выполнено"
+	}
+}
+
+func moderationDurationTextRU(seconds int64) string {
+	if seconds <= 0 {
+		return ""
+	}
+	if seconds%86400 == 0 {
+		return fmt.Sprintf("%d д", seconds/86400)
+	}
+	if seconds%3600 == 0 {
+		return fmt.Sprintf("%d ч", seconds/3600)
+	}
+	if seconds%60 == 0 {
+		return fmt.Sprintf("%d мин", seconds/60)
+	}
+	return fmt.Sprintf("%d сек", seconds)
+}
+
+func moderationAppliedActionsRU(cfg *models.ModerationChatConfig, level models.ModerationChatLevel, event *models.ModerationEvent) string {
+	var parts []string
+	seen := map[string]struct{}{}
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		parts = append(parts, s)
+	}
+	if level.DeleteMessage {
+		add("Удаление")
+	}
+	if level.AlertEnabled && cfg != nil && cfg.AlertChatID != 0 {
+		add("Лог")
+	}
+	act := level.Action
+	if act == "" {
+		act = event.FinalAction
+	}
+	switch act {
+	case "mute":
+		d := NormalizeMuteDurationSeconds(level.DurationSeconds)
+		if d > 0 {
+			add("Мьют " + moderationDurationTextRU(d))
+		} else {
+			add("Мьют")
+		}
+	case "ban":
+		d := level.DurationSeconds
+		if d > 0 {
+			add("Бан " + moderationDurationTextRU(d))
+		} else {
+			add("Бан")
+		}
+	case "delete":
+		add("Удаление")
+	case "alert":
+		// только лог, если не добавлено выше
+		if len(parts) == 0 {
+			add("Лог")
+		}
+	}
+	if len(parts) == 0 {
+		return "Без действий"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func moderationReasonRU(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "local moderation rule matched":
+		return "Сработало локальное правило"
+	case "moderation category disabled":
+		return "Категория выключена"
+	case "rules disabled":
+		return "Правила выключены"
+	case "allow rule matched":
+		return "Сработало разрешающее правило"
+	case "new member mute enabled":
+		return "Включены ограничения для новых пользователей"
+	default:
+		return reason
+	}
+}
+
+func formatAlert(cfg *models.ModerationChatConfig, msg Message, event *models.ModerationEvent, level models.ModerationChatLevel, results []models.ModerationLevelResult) string {
+	categoryLabel := store.ModerationCategoryDisplayName(event.FinalCategory)
+	ts := strings.TrimSpace(event.CreatedAt)
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339)
+	}
+	badgeLine := fmt.Sprintf("%s · %s · %s · %s",
+		moderationAlertStatusRU(event),
+		moderationSeverityLabelRU(event.FinalSeverity),
+		categoryLabel,
+		moderationAppliedActionsRU(cfg, level, event),
+	)
+
+	var b strings.Builder
+	b.WriteString("<b>Модерация</b>\n")
+	b.WriteString(html.EscapeString(badgeLine))
+	b.WriteString("\n🕐 <code>")
+	b.WriteString(html.EscapeString(ts))
+	b.WriteString("</code>\n\n")
+	b.WriteString(fmt.Sprintf("<b>%s</b> <code>(%d)</code>\n",
+		html.EscapeString(strings.TrimSpace(msg.Username)), msg.UserID))
+	b.WriteString("<pre>")
+	b.WriteString(html.EscapeString(truncate(msg.Text, 2500)))
+	b.WriteString("</pre>\n")
+
+	b.WriteString(fmt.Sprintf("\n<b>Чат:</b> %s <code>(%d)</code> · <b>сообщение</b> <code>#%d</code>\n",
+		html.EscapeString(strings.TrimSpace(msg.ChatTitle)), msg.ChatID, msg.MessageID))
+	b.WriteString(fmt.Sprintf("<b>Уверенность:</b> %.2f\n", event.FinalConfidence))
+	if rr := moderationReasonRU(event.FinalReason); rr != "" {
+		b.WriteString(fmt.Sprintf("<b>Причина:</b> %s\n", html.EscapeString(rr)))
+	}
+	if strings.TrimSpace(event.ActionError) != "" {
+		b.WriteString(fmt.Sprintf("<b>Ошибка действия:</b> %s\n", html.EscapeString(event.ActionError)))
+	}
+	if len(results) > 0 {
+		b.WriteString("\n<b>Правила (L1):</b>\n")
+		for _, r := range results {
+			if r.Level != 1 || r.ProviderKind != "rules" || strings.TrimSpace(r.RawResponse) == "" {
+				continue
+			}
+			var matches []models.ModerationRuleMatch
+			if err := json.Unmarshal([]byte(r.RawResponse), &matches); err != nil || len(matches) == 0 {
+				continue
+			}
+			for _, m := range matches {
+				pat := strings.TrimSpace(m.Pattern)
+				if pat == "" {
+					continue
+				}
+				b.WriteString(fmt.Sprintf("· <code>%s</code> %s\n", html.EscapeString(truncate(pat, 120)), html.EscapeString(m.Kind)))
+			}
+			break
+		}
 	}
 	return truncate(b.String(), 3900)
 }

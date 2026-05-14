@@ -2035,6 +2035,8 @@ func ModerationCategoryDisplayName(key string) string {
 		return "Ненормативная лексика"
 	case "other":
 		return "Другое"
+	case "new_member":
+		return "Новые пользователи"
 	case "none":
 		return "Без категории"
 	default:
