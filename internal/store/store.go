@@ -343,8 +343,9 @@ func (s *Store) migrate() error {
 			bot_id INTEGER NOT NULL,
 			chat_id INTEGER NOT NULL,
 			category_key TEXT NOT NULL,
-			enabled INTEGER NOT NULL DEFAULT 1,
+			enabled INTEGER NOT NULL DEFAULT 0,
 			alert_enabled INTEGER NOT NULL DEFAULT 0,
+			delete_message INTEGER NOT NULL DEFAULT 0,
 			mute_minutes INTEGER NOT NULL DEFAULT 0,
 			ban_hours INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT '',
@@ -493,6 +494,13 @@ func (s *Store) migrate() error {
 	}
 	if err := s.seedDefaultModerationRules(); err != nil {
 		return err
+	}
+	var hasCategoryDelete int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('moderation_category_settings') WHERE name='delete_message'`).Scan(&hasCategoryDelete)
+	if hasCategoryDelete == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE moderation_category_settings ADD COLUMN delete_message INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
 	}
 
 	// Add bot_id column to messages if missing (migrate PK to include bot_id)
@@ -1903,7 +1911,7 @@ func (s *Store) ListModerationCategorySettings(botID, chatID int64) ([]models.Mo
 			severities[key][r.Severity] = true
 		}
 	}
-	rows, err := s.db.Query(`SELECT id, bot_id, chat_id, category_key, enabled, alert_enabled, mute_minutes, ban_hours, created_at, updated_at
+	rows, err := s.db.Query(`SELECT id, bot_id, chat_id, category_key, enabled, alert_enabled, delete_message, mute_minutes, ban_hours, created_at, updated_at
 		FROM moderation_category_settings WHERE bot_id=? AND chat_id=?`, botID, chatID)
 	if err != nil {
 		return nil, err
@@ -1911,7 +1919,7 @@ func (s *Store) ListModerationCategorySettings(botID, chatID int64) ([]models.Mo
 	defer rows.Close()
 	for rows.Next() {
 		var c models.ModerationCategorySetting
-		if err := rows.Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.DeleteMessage, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if existing := byKey[c.CategoryKey]; existing != nil {
@@ -1939,9 +1947,9 @@ func (s *Store) ListModerationCategorySettings(botID, chatID int64) ([]models.Mo
 
 func (s *Store) GetModerationCategorySetting(botID, chatID int64, key string) (*models.ModerationCategorySetting, error) {
 	var c models.ModerationCategorySetting
-	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, category_key, enabled, alert_enabled, mute_minutes, ban_hours, created_at, updated_at
+	err := s.db.QueryRow(`SELECT id, bot_id, chat_id, category_key, enabled, alert_enabled, delete_message, mute_minutes, ban_hours, created_at, updated_at
 		FROM moderation_category_settings WHERE bot_id=? AND chat_id=? AND category_key=?`, botID, chatID, key).
-		Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.BotID, &c.ChatID, &c.CategoryKey, &c.Enabled, &c.AlertEnabled, &c.DeleteMessage, &c.MuteMinutes, &c.BanHours, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return &models.ModerationCategorySetting{BotID: botID, ChatID: chatID, CategoryKey: key, Enabled: false, DisplayName: ModerationCategoryDisplayName(key)}, nil
@@ -1964,12 +1972,12 @@ func (s *Store) SaveModerationCategorySetting(c models.ModerationCategorySetting
 		c.BanHours = 0
 	}
 	_, err := s.db.Exec(`INSERT INTO moderation_category_settings
-		(bot_id, chat_id, category_key, enabled, alert_enabled, mute_minutes, ban_hours, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(bot_id, chat_id, category_key, enabled, alert_enabled, delete_message, mute_minutes, ban_hours, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bot_id, chat_id, category_key) DO UPDATE SET
-			enabled=excluded.enabled, alert_enabled=excluded.alert_enabled, mute_minutes=excluded.mute_minutes,
+			enabled=excluded.enabled, alert_enabled=excluded.alert_enabled, delete_message=excluded.delete_message, mute_minutes=excluded.mute_minutes,
 			ban_hours=excluded.ban_hours, updated_at=excluded.updated_at`,
-		c.BotID, c.ChatID, c.CategoryKey, c.Enabled, c.AlertEnabled, c.MuteMinutes, c.BanHours, now, now)
+		c.BotID, c.ChatID, c.CategoryKey, c.Enabled, c.AlertEnabled, c.DeleteMessage, c.MuteMinutes, c.BanHours, now, now)
 	return err
 }
 

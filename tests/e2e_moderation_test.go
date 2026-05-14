@@ -202,6 +202,9 @@ func TestE2E_Moderation(t *testing.T) {
 			events, _ := h.store.ListModerationEvents(botID, 100, 0, "", "", "", "", "", 10, 0)
 			t.Fatalf("expected mute in source chat 100, got %+v events=%+v", reqs, events)
 		}
+		if got := len(h.fake.RequestsFor("sendMessage")); got != 0 {
+			t.Fatalf("expected no alert without category alert setting, got %d", got)
+		}
 	})
 
 	t.Run("ban action targets source chat", func(t *testing.T) {
@@ -222,6 +225,9 @@ func TestE2E_Moderation(t *testing.T) {
 		if len(reqs) != 1 || requestJSONInt(reqs[0].body, "chat_id") != 300 || requestJSONInt(reqs[0].body, "user_id") != 66 {
 			t.Fatalf("expected ban in source chat 300 for user 66, got %+v", reqs)
 		}
+		if got := len(h.fake.RequestsFor("sendMessage")); got != 0 {
+			t.Fatalf("expected no alert without category alert setting, got %d", got)
+		}
 	})
 
 	t.Run("category setting overrides rule action", func(t *testing.T) {
@@ -238,6 +244,33 @@ func TestE2E_Moderation(t *testing.T) {
 		reqs := h.fake.RequestsFor("restrictChatMember")
 		if len(reqs) != 1 || requestJSONInt(reqs[0].body, "chat_id") != 1000 || requestJSONInt(reqs[0].body, "user_id") != 77 {
 			t.Fatalf("expected category mute in source chat 1000 for user 77, got %+v", reqs)
+		}
+	})
+
+	t.Run("category actions combine delete alert and mute", func(t *testing.T) {
+		h := setupE2E(t)
+		botID := registerAndManage(h, "mod12:token", "modbot12")
+		_ = h.store.UpsertChat(botID, models.Chat{ID: 1201, Type: "supergroup", Title: "Logs", UpdatedAt: time.Now().Format(time.RFC3339)})
+		if err := h.store.SaveModerationChatConfig(models.ModerationChatConfig{BotID: botID, ChatID: 1200, Enabled: true, AlertChatID: 1201, SkipBotMessages: true, IncludeContext: true}); err != nil {
+			t.Fatalf("SaveModerationChatConfig: %v", err)
+		}
+		if err := h.store.SaveModerationCategorySetting(models.ModerationCategorySetting{BotID: botID, ChatID: 1200, CategoryKey: "harassment", Enabled: true, AlertEnabled: true, DeleteMessage: true, MuteMinutes: 10}); err != nil {
+			t.Fatalf("SaveModerationCategorySetting: %v", err)
+		}
+		saveModerationRule(t, h, models.ModerationRule{BotID: botID, ChatID: 1200, Enabled: true, Kind: "keyword", Pattern: "comboaction", Category: "harassment", Severity: "high", Confidence: 0.9, Mode: "soft", Action: "none"})
+		h.InjectUpdate(botID, makeTextUpdate(12, 1200, 79, "combo_user", "comboaction"))
+		if got := len(h.fake.RequestsFor("deleteMessage")); got != 1 {
+			t.Fatalf("expected deleteMessage request, got %d", got)
+		}
+		if got := len(h.fake.RequestsFor("sendMessage")); got != 1 {
+			t.Fatalf("expected alert sendMessage request, got %d", got)
+		}
+		if got := len(h.fake.RequestsFor("restrictChatMember")); got != 1 {
+			t.Fatalf("expected mute restrictChatMember request, got %d", got)
+		}
+		events, _ := h.store.ListModerationEvents(botID, 1200, 0, "", "", "", "", "", 10, 0)
+		if len(events) != 1 || events[0].Status != "action_taken" || !strings.Contains(events[0].ActionResult, "message deleted") || !strings.Contains(events[0].ActionResult, "muted") {
+			t.Fatalf("unexpected combo action event: %+v", events)
 		}
 	})
 

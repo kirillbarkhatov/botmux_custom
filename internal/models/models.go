@@ -223,6 +223,7 @@ type ModerationCategorySetting struct {
 	CategoryKey     string `json:"category_key"`
 	Enabled         bool   `json:"enabled"`
 	AlertEnabled    bool   `json:"alert_enabled"`
+	DeleteMessage   bool   `json:"delete_message"`
 	MuteMinutes     int64  `json:"mute_minutes"`
 	BanHours        int64  `json:"ban_hours"`
 	CreatedAt       string `json:"created_at"`
@@ -279,6 +280,8 @@ type ModerationPrefilterResult struct {
 	Confidence      float64               `json:"confidence"`
 	Action          string                `json:"action"`
 	DurationSeconds int64                 `json:"duration_seconds"`
+	AlertEnabled    bool                  `json:"alert_enabled"`
+	DeleteMessage   bool                  `json:"delete_message"`
 	Reason          string                `json:"reason"`
 }
 
@@ -312,6 +315,8 @@ type ModerationChatLevel struct {
 	TriggerSeverity    string  `json:"trigger_severity"`
 	Action             string  `json:"action"`
 	DurationSeconds    int64   `json:"duration_seconds"`
+	AlertEnabled       bool    `json:"alert_enabled"`
+	DeleteMessage      bool    `json:"delete_message"`
 	CreatedAt          string  `json:"created_at"`
 	UpdatedAt          string  `json:"updated_at"`
 }

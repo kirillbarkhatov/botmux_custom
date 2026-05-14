@@ -5361,6 +5361,7 @@ function newMemberHasRestrictions(cfg) {
 
 function categoryActionText(c) {
   const parts = [];
+  if (c.delete_message) parts.push('удаление');
   if (c.alert_enabled) parts.push('логи');
   if (c.mute_minutes > 0) parts.push(`мьют ${c.mute_minutes} мин`);
   if (c.ban_hours > 0) parts.push(`бан ${c.ban_hours} ч`);
@@ -5552,13 +5553,15 @@ async function openCategoryModal(key) {
   modCurrentCategoryRules = await api(`/api/moderation/categories/rules?bot_id=${currentBotID}&chat_id=${currentChat.id}&category=${encodeURIComponent(key)}`);
   document.getElementById('modCategoryTitle').textContent = modCurrentCategory.display_name || key;
   document.getElementById('modCategoryEnabled').checked = modCurrentCategory.enabled !== false;
+  document.getElementById('modCategoryDeleteMessage').checked = !!modCurrentCategory.delete_message;
   document.getElementById('modCategoryAlertEnabled').checked = !!modCurrentCategory.alert_enabled;
   document.getElementById('modCategoryMuteMinutes').value = modCurrentCategory.mute_minutes || 0;
   document.getElementById('modCategoryBanHours').value = modCurrentCategory.ban_hours || 0;
-  const alertSel = document.getElementById('modCategoryAlertChat');
+  const alertSel = document.getElementById('modCategoryAlertChatHidden');
   alertSel.innerHTML = `<option value="0">${t('none')}</option>` + (modAlertChatsCache || []).map(c => `<option value="${c.id}">${esc(c.title || c.username || String(c.id))} / ${c.id}</option>`).join('');
   alertSel.value = String(modConfigCache?.alert_chat_id || 0);
   document.getElementById('modCategoryRulesText').value = modCurrentCategoryRules.map(r => r.pattern || '').join('\n');
+  renderCategorySettingsCards();
   closeFilterModal();
   document.getElementById('modCategoryModal').style.display = 'flex';
 }
@@ -5574,11 +5577,12 @@ async function saveCategoryModal() {
     chat_id: currentChat.id,
     category_key: key,
     enabled: document.getElementById('modCategoryEnabled').checked,
+    delete_message: document.getElementById('modCategoryDeleteMessage').checked,
     alert_enabled: document.getElementById('modCategoryAlertEnabled').checked,
     mute_minutes: parseInt(document.getElementById('modCategoryMuteMinutes').value || '0'),
     ban_hours: parseInt(document.getElementById('modCategoryBanHours').value || '0')
   };
-  const alertChat = parseInt(document.getElementById('modCategoryAlertChat').value || '0');
+  const alertChat = parseInt(document.getElementById('modCategoryAlertChatHidden').value || '0');
   if (alertChat !== (modConfigCache?.alert_chat_id || 0)) {
     await saveModerationConfigPatch({alert_chat_id: alertChat});
   }
@@ -5604,6 +5608,78 @@ async function saveCategoryModal() {
   closeCategoryModal();
   renderModerationOverview();
   toast(t('saved'));
+}
+
+function renderCategorySettingsCards() {
+  const enabled = document.getElementById('modCategoryEnabled').checked;
+  const del = document.getElementById('modCategoryDeleteMessage').checked;
+  const alert = document.getElementById('modCategoryAlertEnabled').checked;
+  const mute = parseInt(document.getElementById('modCategoryMuteMinutes').value || '0');
+  const ban = parseInt(document.getElementById('modCategoryBanHours').value || '0');
+  const alertHidden = document.getElementById('modCategoryAlertChatHidden');
+  const alertOptions = alertHidden.innerHTML;
+  const alertValue = alertHidden.value || '0';
+  document.getElementById('modCategorySettingsCards').innerHTML = `
+    ${categorySettingCard('Категория', enabled, enabled ? 'Категория включена' : 'Категория выключена', `toggleCategoryCheckbox('modCategoryEnabled')`)}
+    ${categorySettingCard('Удалить сообщение', del, del ? 'Сообщение будет удалено' : 'Сообщение останется в чате', `toggleCategoryCheckbox('modCategoryDeleteMessage')`)}
+    <div class="mod-status-card">
+      <div>
+        <div class="mod-status-title">Чат с логами</div>
+        ${modBadge(alert ? 'ON' : 'OFF', alert ? 'clean' : 'status-error')}
+        <div class="mod-status-note">${alert ? 'Отправлять событие в лог-чат' : 'Не отправлять в лог-чат'}</div>
+        <div class="mod-field" style="margin-top:10px"><label>Чат с логами</label><select id="modCategoryAlertChatVisible" onchange="document.getElementById('modCategoryAlertChatHidden').value=this.value">${alertOptions}</select></div>
+      </div>
+      <div class="mod-status-actions"><button class="btn btn-sm ${alert ? 'btn-danger' : 'btn-primary'}" onclick="toggleCategoryCheckbox('modCategoryAlertEnabled')">${alert ? 'Отключить' : 'Включить'}</button></div>
+    </div>
+    <div class="mod-status-card">
+      <div>
+        <div class="mod-status-title">Мьют</div>
+        ${modBadge(mute > 0 ? 'ON' : 'OFF', mute > 0 ? 'clean' : 'status-error')}
+        <div class="mod-status-note">${mute > 0 ? `На ${mute} минут` : 'Без мьюта'}</div>
+        <div class="mod-field" style="margin-top:10px"><label>Минут</label><input id="modCategoryMuteMinutesVisible" type="number" min="0" value="${mute}" oninput="document.getElementById('modCategoryMuteMinutes').value=this.value" onchange="renderCategorySettingsCards()"></div>
+      </div>
+      <div class="mod-status-actions"><button class="btn btn-sm ${mute > 0 ? 'btn-danger' : 'btn-primary'}" onclick="toggleCategoryNumber('modCategoryMuteMinutes', 5)">${mute > 0 ? 'Отключить' : 'Включить'}</button></div>
+    </div>
+    <div class="mod-status-card">
+      <div>
+        <div class="mod-status-title">Бан</div>
+        ${modBadge(ban > 0 ? 'ON' : 'OFF', ban > 0 ? 'clean' : 'status-error')}
+        <div class="mod-status-note">${ban > 0 ? `На ${ban} часов` : 'Без бана'}</div>
+        <div class="mod-field" style="margin-top:10px"><label>Часов</label><input id="modCategoryBanHoursVisible" type="number" min="0" value="${ban}" oninput="document.getElementById('modCategoryBanHours').value=this.value" onchange="renderCategorySettingsCards()"></div>
+      </div>
+      <div class="mod-status-actions"><button class="btn btn-sm ${ban > 0 ? 'btn-danger' : 'btn-primary'}" onclick="toggleCategoryNumber('modCategoryBanHours', 1)">${ban > 0 ? 'Отключить' : 'Включить'}</button></div>
+    </div>`;
+  const visibleAlert = document.getElementById('modCategoryAlertChatVisible');
+  if (visibleAlert) visibleAlert.value = alertValue;
+}
+
+function categorySettingCard(title, on, note, action) {
+  return `<div class="mod-status-card">
+    <div>
+      <div class="mod-status-title">${esc(title)}</div>
+      ${modBadge(on ? 'ON' : 'OFF', on ? 'clean' : 'status-error')}
+      <div class="mod-status-note">${esc(note)}</div>
+    </div>
+    <div class="mod-status-actions"><button class="btn btn-sm ${on ? 'btn-danger' : 'btn-primary'}" onclick="${action}">${on ? 'Отключить' : 'Включить'}</button></div>
+  </div>`;
+}
+
+function toggleCategoryCheckbox(id) {
+  const el = document.getElementById(id);
+  el.checked = !el.checked;
+  renderCategorySettingsCards();
+}
+
+function setCategoryNumber(id, value) {
+  document.getElementById(id).value = parseInt(value || '0');
+  renderCategorySettingsCards();
+}
+
+function toggleCategoryNumber(id, defaultValue) {
+  const el = document.getElementById(id);
+  const value = parseInt(el.value || '0');
+  el.value = value > 0 ? 0 : defaultValue;
+  renderCategorySettingsCards();
 }
 </script>
 
@@ -5686,13 +5762,15 @@ async function saveCategoryModal() {
     </div>
     <div class="profile-section">
       <div class="profile-section-title">Настройки категории</div>
-      <label class="modal-perm"><input type="checkbox" id="modCategoryEnabled"> <span>Категория включена</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modCategoryAlertEnabled"> <span>Направлять в чат с логами</span></label>
-      <div class="mod-form-grid">
-        <div class="mod-field"><label>Чат с логами</label><select id="modCategoryAlertChat"></select></div>
-        <div class="mod-field"><label>Мьют на минут</label><input id="modCategoryMuteMinutes" type="number" min="0"></div>
-        <div class="mod-field"><label>Бан на часов</label><input id="modCategoryBanHours" type="number" min="0"></div>
+      <div style="display:none">
+        <input type="checkbox" id="modCategoryEnabled">
+        <input type="checkbox" id="modCategoryDeleteMessage">
+        <input type="checkbox" id="modCategoryAlertEnabled">
+        <select id="modCategoryAlertChatHidden"></select>
+        <input id="modCategoryMuteMinutes" type="number" min="0">
+        <input id="modCategoryBanHours" type="number" min="0">
       </div>
+      <div id="modCategorySettingsCards" class="mod-list"></div>
     </div>
     <div class="profile-section">
       <div class="profile-section-title">Слова и выражения</div>

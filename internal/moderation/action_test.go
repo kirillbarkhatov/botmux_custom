@@ -12,6 +12,7 @@ type actionBotStub struct {
 }
 
 func (b *actionBotStub) SendMessageGetID(chatID int64, text string) (int, error) { return 0, nil }
+func (b *actionBotStub) DeleteMessage(chatID int64, messageID int) error         { return nil }
 func (b *actionBotStub) MuteUser(chatID int64, userID int64, untilUnix int64) error {
 	b.muteUntil = untilUnix
 	return nil

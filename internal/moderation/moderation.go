@@ -123,7 +123,7 @@ func (s *Service) Process(ctx context.Context, msg Message, bot ActionBot) {
 		if err := s.applyAction(cfg, msg, &event, hardLevel, results, bot); err != nil {
 			event.ActionError = err.Error()
 			event.Status = "error"
-		} else if hardLevel.Action == "mute" || hardLevel.Action == "ban" {
+		} else if hardLevel.Action == "mute" || hardLevel.Action == "ban" || hardLevel.Action == "delete" || hardLevel.DeleteMessage {
 			event.Status = "action_taken"
 		}
 		_ = s.store.UpdateModerationEvent(event)
@@ -175,6 +175,9 @@ func applyCategoryAction(result *models.ModerationPrefilterResult, setting model
 	if setting.AlertEnabled {
 		result.Action = "alert"
 	}
+	if setting.DeleteMessage {
+		result.Action = "delete"
+	}
 	if setting.MuteMinutes > 0 {
 		result.Action = "mute"
 		result.DurationSeconds = setting.MuteMinutes * 60
@@ -183,6 +186,8 @@ func applyCategoryAction(result *models.ModerationPrefilterResult, setting model
 		result.Action = "ban"
 		result.DurationSeconds = setting.BanHours * 3600
 	}
+	result.AlertEnabled = setting.AlertEnabled
+	result.DeleteMessage = setting.DeleteMessage
 }
 
 func (s *Service) TestRules(req models.ModerationRuleTestRequest) (*models.ModerationRuleTestResponse, error) {
@@ -308,6 +313,8 @@ func actionLevelFromPrefilter(result models.ModerationPrefilterResult) models.Mo
 	}
 	return models.ModerationChatLevel{
 		Level: 1, Name: "Level 1: rules", Action: action, DurationSeconds: result.DurationSeconds,
+		AlertEnabled:  result.AlertEnabled || action == "alert",
+		DeleteMessage: result.DeleteMessage,
 		MinConfidence: 0.70, TriggerSeverity: "low",
 	}
 }
@@ -478,17 +485,39 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 		event.ActionResult = "no action"
 		return nil
 	}
-	if cfg.AlertChatID != 0 {
+	var actionResults []string
+	if level.DeleteMessage && msg.MessageID != 0 {
+		if err := bot.DeleteMessage(msg.ChatID, msg.MessageID); err != nil {
+			event.ActionError = "delete failed: " + err.Error()
+		} else {
+			if s.store != nil {
+				_ = s.store.MarkMessageDeleted(msg.BotID, msg.ChatID, msg.MessageID)
+			}
+			actionResults = append(actionResults, "message deleted")
+		}
+	}
+	if level.AlertEnabled && cfg.AlertChatID != 0 {
 		alertID, err := bot.SendMessageGetID(cfg.AlertChatID, formatAlert(cfg, msg, event, level, results))
 		if err != nil {
 			event.ActionError = "alert failed: " + err.Error()
 		} else {
 			event.AlertSent = true
 			event.AlertMessageID = alertID
+			actionResults = append(actionResults, "alert sent")
 		}
 	}
 	if action == "alert" {
-		event.ActionResult = "alert sent"
+		if len(actionResults) == 0 {
+			actionResults = append(actionResults, "alert requested")
+		}
+		event.ActionResult = strings.Join(actionResults, "; ")
+		return nil
+	}
+	if action == "delete" {
+		if len(actionResults) == 0 {
+			actionResults = append(actionResults, "delete requested")
+		}
+		event.ActionResult = strings.Join(actionResults, "; ")
 		return nil
 	}
 	if msg.UserID == 0 {
@@ -505,7 +534,7 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 			return err
 		}
 		event.ActionDurationSeconds = duration
-		event.ActionResult = fmt.Sprintf("muted in source chat for %ds", duration)
+		actionResults = append(actionResults, fmt.Sprintf("muted in source chat for %ds", duration))
 	case "ban":
 		duration := level.DurationSeconds
 		var until int64
@@ -517,11 +546,12 @@ func (s *Service) applyAction(cfg *models.ModerationChatConfig, msg Message, eve
 		}
 		event.ActionDurationSeconds = duration
 		if duration > 0 {
-			event.ActionResult = fmt.Sprintf("banned in source chat for %ds", duration)
+			actionResults = append(actionResults, fmt.Sprintf("banned in source chat for %ds", duration))
 		} else {
-			event.ActionResult = "banned in source chat"
+			actionResults = append(actionResults, "banned in source chat")
 		}
 	}
+	event.ActionResult = strings.Join(actionResults, "; ")
 	return nil
 }
 

@@ -16,6 +16,7 @@ type Message struct {
 
 type ActionBot interface {
 	SendMessageGetID(chatID int64, text string) (int, error)
+	DeleteMessage(chatID int64, messageID int) error
 	MuteUser(chatID int64, userID int64, untilUnix int64) error
 	BanUserUntil(chatID int64, userID int64, untilUnix int64) error
 	GetAdmins(chatID int64) ([]models.AdminInfo, error)
