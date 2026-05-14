@@ -5413,6 +5413,8 @@ let modCategoriesCache = [];
 let modCurrentCategory = null;
 let modCurrentCategoryRules = [];
 
+// Отдельная настройка по типам сообщений и возможностям пока не доступна: список ниже
+// только отражает состав ограничений; менять состояние можно только кнопками «Выбрать всё» / «Снять всё».
 function modRestrictFields() {
   return [
     ['new_member_can_send_messages', 'modNmNoMessages'],
@@ -5761,6 +5763,7 @@ function toggleCategoryNumber(id, defaultValue) {
 </script>
 
 <!-- New Member Restrictions Modal -->
+<!-- Отдельная настройка по типам сообщений и возможностям пока не доступна — только пакетно «Выбрать всё» / «Снять всё». -->
 <div id="modNewMembersModal" class="modal-overlay mod-modal" style="display:none" onclick="if(event.target===this)closeNewMemberModal()">
   <div class="modal">
     <div class="profile-header">
@@ -5772,24 +5775,25 @@ function toggleCategoryNumber(id, defaultValue) {
     </div>
     <div class="profile-section">
       <div class="profile-section-title">Ограничения</div>
-      <div class="mod-card-actions" style="justify-content:flex-start;margin-bottom:10px">
-        <button class="btn btn-sm" onclick="setNewMemberChecks(true)">Отметить всё</button>
-        <button class="btn btn-sm" onclick="setNewMemberChecks(false)">Снять всё</button>
+      <div class="mod-card-actions" style="justify-content:flex-start;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-primary" onclick="setNewMemberChecks(true)">Выбрать всё</button>
+        <button type="button" class="btn btn-sm" onclick="setNewMemberChecks(false)">Снять всё</button>
       </div>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoMessages"> <span>Нельзя отправлять сообщения</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoAudios"> <span>Нельзя отправлять аудио</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoDocuments"> <span>Нельзя отправлять документы</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoPhotos"> <span>Нельзя отправлять фото</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoVideos"> <span>Нельзя отправлять видео</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoVideoNotes"> <span>Нельзя отправлять видеозаметки</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoVoiceNotes"> <span>Нельзя отправлять голосовые заметки</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoOther"> <span>Нельзя отправлять другие сообщения</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoPreview"> <span>Нельзя добавлять превью веб-страниц</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoPolls"> <span>Нельзя отправлять опросы</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoInvite"> <span>Нельзя приглашать пользователей</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoPin"> <span>Нельзя закреплять сообщения</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoInfo"> <span>Нельзя изменять информацию чата</span></label>
-      <label class="modal-perm"><input type="checkbox" id="modNmNoTopics"> <span>Нельзя управлять темами</span></label>
+      <div class="hint" style="margin-bottom:12px">Отдельная настройка по типам сообщений и возможностям пока не доступна. Состав ограничений меняется только целиком кнопками выше.</div>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoMessages" disabled> <span>Нельзя отправлять сообщения</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoAudios" disabled> <span>Нельзя отправлять аудио</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoDocuments" disabled> <span>Нельзя отправлять документы</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPhotos" disabled> <span>Нельзя отправлять фото</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoVideos" disabled> <span>Нельзя отправлять видео</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoVideoNotes" disabled> <span>Нельзя отправлять видеозаметки</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoVoiceNotes" disabled> <span>Нельзя отправлять голосовые заметки</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoOther" disabled> <span>Нельзя отправлять другие сообщения</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPreview" disabled> <span>Нельзя добавлять превью веб-страниц</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPolls" disabled> <span>Нельзя отправлять опросы</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoInvite" disabled> <span>Нельзя приглашать пользователей</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoPin" disabled> <span>Нельзя закреплять сообщения</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoInfo" disabled> <span>Нельзя изменять информацию чата</span></label>
+      <label class="modal-perm"><input type="checkbox" id="modNmNoTopics" disabled> <span>Нельзя управлять темами</span></label>
     </div>
     <div class="profile-section">
       <div class="profile-section-title">Срок ограничения</div>
