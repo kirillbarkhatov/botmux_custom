@@ -1335,7 +1335,19 @@ body::before { display: none; }
 .mod-subtitle { color: var(--text2); font-family: var(--ff-mono); font-size: 12px; }
 .mod-badges, .mod-actions, .mod-card-actions, .mod-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .mod-badges { justify-content: flex-end; }
-.mod-dashboard { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.mod-dashboard { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mod-dashboard-events { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.mod-status-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px; min-height: 110px;
+  display: flex; justify-content: space-between; gap: 14px; align-items: flex-start;
+  box-shadow: var(--shadow);
+}
+.mod-status-title { font-family: var(--ff-display); font-size: 18px; font-weight: 700; color: var(--text); }
+.mod-status-note { color: var(--text3); font-size: 12px; margin-top: 8px; }
+.mod-status-card .badge { margin-top: 10px; }
+.mod-status-actions { display: flex; align-items: flex-start; gap: 8px; flex-shrink: 0; }
+.mod-hidden { display: none !important; }
 .mod-summary-grid { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1.2fr); gap: 16px; }
 .mod-card {
   background: var(--surface); border: 1px solid var(--border);
@@ -1418,7 +1430,7 @@ body::before { display: none; }
 .badge.status-action_taken, .badge.mute, .badge.ban, .badge.high { color: var(--magenta); border-color: rgba(255,92,138,0.25); background: rgba(255,92,138,0.08); }
 .badge.status-error { color: var(--magenta); border-color: rgba(255,92,138,0.35); background: rgba(255,92,138,0.12); }
 @media (max-width: 900px) {
-  .mod-dashboard, .mod-flow, .mod-summary-grid { grid-template-columns: 1fr; }
+  .mod-dashboard, .mod-dashboard-events, .mod-flow, .mod-summary-grid { grid-template-columns: 1fr; }
   .mod-hero, .mod-item-main { flex-direction: column; }
   .mod-badges { justify-content: flex-start; }
   .mod-form-grid { grid-template-columns: 1fr; }
@@ -1740,7 +1752,7 @@ body::before { display: none; }
           <div id="modClassifyResult" style="margin-top:12px"></div>
         </div>
 
-        <div class="mod-card">
+        <div class="mod-card" id="modEventsCard">
           <div class="mod-card-head">
             <div>
               <div class="mod-card-title" data-i18n="moderation_log">Moderation log</div>
@@ -1748,7 +1760,7 @@ body::before { display: none; }
             </div>
             <button class="btn btn-primary btn-sm" onclick="openModerationEventsModal()" data-i18n="moderation_open_log">Open log</button>
           </div>
-          <div class="mod-dashboard" id="modEventStats"></div>
+          <div class="mod-dashboard mod-dashboard-events" id="modEventStats"></div>
           <div class="hint" style="margin-top:12px" data-i18n="moderation_log_modal_hint">Open the log to filter, page through events, and inspect details.</div>
         </div>
       </div>
@@ -5384,34 +5396,35 @@ function renderModerationOverview() {
   const newUsersOn = newMemberHasRestrictions(cfg);
   const dash = document.getElementById('modDashboard');
   if (!dash) return;
+  const eventsCard = document.getElementById('modEventsCard');
+  if (eventsCard) eventsCard.classList.toggle('mod-hidden', !cfg.enabled);
   dash.innerHTML = `
-    <div class="mod-item">
-      <div class="mod-item-main">
-        <div>
-          <div class="mod-item-title">Статус</div>
-          <div class="mod-meta" style="margin-top:6px">${modBadge(cfg.enabled ? 'ON' : 'OFF', cfg.enabled ? 'clean' : 'status-error')}</div>
-        </div>
+    <div class="mod-status-card">
+      <div>
+        <div class="mod-status-title">Статус</div>
+        ${modBadge(cfg.enabled ? 'ON' : 'OFF', cfg.enabled ? 'clean' : 'status-error')}
+      </div>
+      <div class="mod-status-actions">
         <button class="btn btn-sm ${cfg.enabled ? 'btn-danger' : 'btn-primary'}" onclick="toggleModerationGroup()">${cfg.enabled ? 'Отключить модерацию группы' : 'Включить модерацию группы'}</button>
       </div>
     </div>
-    <div class="mod-item" onclick="if(!event.target.closest('button'))openNewMemberModal()">
-      <div class="mod-item-main">
-        <div>
-          <div class="mod-item-title">Новые пользователи</div>
-          <div class="mod-item-note">${newUsersOn ? 'Ограничения включены' : 'Ограничений нет'}</div>
-        </div>
-        ${modBadge(newUsersOn ? 'ON' : 'OFF', newUsersOn ? 'clean' : 'status-skipped')}
+    ${cfg.enabled ? `
+    <div class="mod-status-card">
+      <div>
+        <div class="mod-status-title">Новые пользователи</div>
+        ${modBadge(newUsersOn ? 'ON' : 'OFF', newUsersOn ? 'clean' : 'status-error')}
+        <div class="mod-status-note">${newUsersOn ? 'Ограничения включены' : 'Ограничений нет'}</div>
       </div>
+      <div class="mod-status-actions"><button class="btn btn-sm" onclick="openNewMemberModal()">Настроить</button></div>
     </div>
-    <div class="mod-item" onclick="if(!event.target.closest('button'))openFilterModal()">
-      <div class="mod-item-main">
-        <div>
-          <div class="mod-item-title">Фильтр</div>
-          <div class="mod-item-note">${filterOn ? 'Включен' : 'Выключен'} · ${modCategoriesCache.length} категорий</div>
-        </div>
-        ${modBadge(filterOn ? 'Включен' : 'Выключен', filterOn ? 'clean' : 'status-error')}
+    <div class="mod-status-card">
+      <div>
+        <div class="mod-status-title">Фильтр</div>
+        ${modBadge(filterOn ? 'ON' : 'OFF', filterOn ? 'clean' : 'status-error')}
+        <div class="mod-status-note">${filterOn ? 'Включен' : 'Выключен'} · ${modCategoriesCache.length} категорий</div>
       </div>
-    </div>`;
+      <div class="mod-status-actions"><button class="btn btn-sm" onclick="openFilterModal()">Настроить</button></div>
+    </div>` : ''}`;
 }
 
 async function saveModerationConfigPatch(patch) {
@@ -5463,6 +5476,13 @@ function closeNewMemberModal() {
   document.getElementById('modNewMembersModal').style.display = 'none';
 }
 
+function setNewMemberChecks(checked) {
+  modRestrictFields().forEach(([, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = checked;
+  });
+}
+
 async function saveNewMemberRestrictions() {
   const patch = {};
   let anyRestriction = false;
@@ -5496,18 +5516,33 @@ async function toggleModerationFilter() {
   renderFilterModal();
 }
 
+async function toggleModerationCategory(key, enabled) {
+  const c = modCategoriesCache.find(x => x.category_key === key);
+  if (!c) return;
+  const setting = {...c, bot_id: currentBotID, chat_id: currentChat.id, enabled};
+  await api('/api/moderation/categories/update', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(setting)});
+  await loadModerationCategories();
+  renderFilterModal();
+  renderModerationOverview();
+  toast(t('saved'));
+}
+
 function renderFilterModal() {
   const list = document.getElementById('modCategoryList');
   const filterOn = modConfigCache?.rules_enabled !== false;
   document.getElementById('modFilterStatusText').innerHTML = modBadge(filterOn ? 'Включен' : 'Выключен', filterOn ? 'clean' : 'status-error');
   list.innerHTML = modCategoriesCache.map(c => `
-    <div class="mod-item" onclick="openCategoryModal('${escAttr(c.category_key)}')">
+    <div class="mod-item">
       <div class="mod-item-main">
         <div>
           <div class="mod-item-title">${esc(c.display_name || c.category_key)}</div>
           <div class="mod-item-note">${c.enabled ? 'категория включена' : 'категория выключена'} · ${categoryActionText(c)} · правил: ${c.enabled_rules}/${c.rules_count}</div>
         </div>
-        ${modBadge(c.enabled ? 'ON' : 'OFF', c.enabled ? 'clean' : 'status-skipped')}
+        <div class="mod-card-actions">
+          ${modBadge(c.enabled ? 'ON' : 'OFF', c.enabled ? 'clean' : 'status-error')}
+          <button class="btn btn-sm ${c.enabled ? 'btn-danger' : 'btn-primary'}" onclick="toggleModerationCategory('${escAttr(c.category_key)}', ${c.enabled ? 'false' : 'true'})">${c.enabled ? 'Отключить' : 'Включить'}</button>
+          <button class="btn btn-sm" onclick="openCategoryModal('${escAttr(c.category_key)}')">Настроить</button>
+        </div>
       </div>
     </div>`).join('') || `<div class="mod-empty"><div class="mod-empty-title">Категорий нет</div></div>`;
 }
@@ -5588,6 +5623,10 @@ async function saveCategoryModal() {
     </div>
     <div class="profile-section">
       <div class="profile-section-title">Ограничения</div>
+      <div class="mod-card-actions" style="justify-content:flex-start;margin-bottom:10px">
+        <button class="btn btn-sm" onclick="setNewMemberChecks(true)">Отметить всё</button>
+        <button class="btn btn-sm" onclick="setNewMemberChecks(false)">Снять всё</button>
+      </div>
       <label class="modal-perm"><input type="checkbox" id="modNmNoMessages"> <span>Нельзя отправлять сообщения</span></label>
       <label class="modal-perm"><input type="checkbox" id="modNmNoAudios"> <span>Нельзя отправлять аудио</span></label>
       <label class="modal-perm"><input type="checkbox" id="modNmNoDocuments"> <span>Нельзя отправлять документы</span></label>

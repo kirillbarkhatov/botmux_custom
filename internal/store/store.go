@@ -1993,12 +1993,24 @@ func ModerationCategoryDisplayName(key string) string {
 		return "Реклама и спам"
 	case "phishing_scam":
 		return "Фишинг и мошенничество"
+	case "fraud_financial":
+		return "Финансовое мошенничество"
 	case "profanity_ru":
 		return "Русская ненормативная лексика"
 	case "cyber_abuse":
 		return "Киберзлоупотребления"
 	case "evasion_meta":
 		return "Обход модерации"
+	case "harassment_threats":
+		return "Оскорбления и угрозы"
+	case "hate_extremism":
+		return "Ненависть и экстремизм"
+	case "illegal_goods":
+		return "Запрещенные товары"
+	case "self_harm_crisis":
+		return "Самоповреждение и кризис"
+	case "sexual_grooming_risk":
+		return "Сексуальные риски"
 	case "insult":
 		return "Оскорбления"
 	case "harassment":
